@@ -1,7 +1,18 @@
 // Reads the Supabase settings on the server at request time. The names are built
 // dynamically so Next.js doesn't freeze them into the build: a value added in Vercel
 // after a build still works. Values are trimmed because pasted keys often carry spaces.
-const read = (name: string) => process.env[name]?.trim().replace(/^["']|["']$/g, "") || undefined;
+// The name match ignores case and stray spaces, since names typed on a phone often pick some up.
+const normalize = (name: string) => name.replace(/[^A-Za-z0-9_]/g, "").toUpperCase();
+function read(name: string) {
+  const exact = process.env[name];
+  const key = exact !== undefined ? name : Object.keys(process.env).find((k) => normalize(k) === name);
+  return (key && process.env[key]?.trim().replace(/^["']|["']$/g, "")) || undefined;
+}
+
+// Names (never values) of settings that mention Supabase, to help spot a mistyped name.
+export function supabaseEnvNames() {
+  return Object.keys(process.env).filter((k) => /supa/i.test(k)).map((k) => JSON.stringify(k));
+}
 
 export function supabaseEnv() {
   const url = read(["NEXT", "PUBLIC", "SUPABASE", "URL"].join("_"))?.replace(/\/+$/, "");

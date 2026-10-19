@@ -3,7 +3,7 @@ import { connection } from "next/server";
 import { redirect } from "next/navigation";
 import { CheckCircle2, XCircle } from "lucide-react";
 import { Card } from "@/components/ui";
-import { checkSupabaseEnv } from "@/lib/supabase/env";
+import { checkSupabaseEnv, supabaseEnvNames } from "@/lib/supabase/env";
 
 export const metadata: Metadata = { title: "Setup needed" };
 
@@ -12,6 +12,7 @@ export default async function SetupPage() {
   await connection();
   const checks = checkSupabaseEnv();
   if (checks.every((c) => c.status === "ok")) redirect("/login");
+  const names = supabaseEnvNames();
 
   return (
     <main className="mx-auto max-w-lg px-4 py-10">
@@ -34,6 +35,23 @@ export default async function SetupPage() {
             </div>
           </div>
         ))}
+      </Card>
+      <Card className="mt-4 text-sm">
+        <p className="font-medium">Supabase setting names this deployment can see</p>
+        {names.length ? (
+          <ul className="mt-1 space-y-0.5">
+            {names.map((n) => (
+              <li key={n}>
+                <code className="break-all">{n}</code>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-1 text-muted">
+            None. Vercel isn&apos;t giving this deployment any setting with &quot;SUPA&quot; in its name, so check that the variables
+            belong to the <b>lengible</b> project and have <b>Production</b> ticked.
+          </p>
+        )}
       </Card>
       <p className="mt-4 text-sm text-muted">
         Fix them in Vercel → your project → Settings → Environment Variables (tick Production), then reload this page.
