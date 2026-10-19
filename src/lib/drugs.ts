@@ -24,38 +24,51 @@ const drugFields = (d: SeedDrug, classId: string, i: number) => ({
 // Copies Lengible's drug list into the account, or adds what's new since last time.
 // Entries you have edited are never overwritten; unedited, unverified ones get the latest wording.
 export async function syncDrugSeed(supabase: DB) {
-  const [{ data: existingClasses }, { data: existingDrugs }] = await Promise.all([
+  const [classesRes, drugsRes] = await Promise.all([
     supabase.from("drug_classes").select("id, seed_key, edited, verified"),
     supabase.from("drugs").select("id, seed_key, edited, verified"),
   ]);
-  const classByKey = new Map((existingClasses ?? []).filter((c) => c.seed_key).map((c) => [c.seed_key!, c]));
-  const drugByKey = new Map((existingDrugs ?? []).filter((d) => d.seed_key).map((d) => [d.seed_key!, d]));
+  const readError = classesRes.error ?? drugsRes.error;
+  if (readError) throw new Error(readError.message);
+  const classByKey = new Map((classesRes.data ?? []).filter((c) => c.seed_key).map((c) => [c.seed_key!, c]));
+  const drugByKey = new Map((drugsRes.data ?? []).filter((d) => d.seed_key).map((d) => [d.seed_key!, d]));
   const classId = new Map<string, string>();
   for (const [k, c] of classByKey) classId.set(k, c.id);
 
-  // Parents before children (two levels deep).
-  const ordered = [...seedClasses.filter((c) => !c.parent), ...seedClasses.filter((c) => c.parent)];
-  let added = 0;
+  const fieldsFor = (c: (typeof seedClasses)[number], i: number) => ({
+    seed_key: c.key,
+    name: c.name,
+    system: c.system,
+    parent_id: c.parent ? (classId.get(c.parent) ?? null) : null,
+    description: c.description,
+    mnemonic: c.mnemonic ?? null,
+    recognition_tip: c.tip ?? null,
+    sort_order: SYSTEMS.indexOf(c.system as (typeof SYSTEMS)[number]) * 1000 + i,
+  });
+  const index = new Map(seedClasses.map((c, i) => [c.key, i]));
+  const depth = (c: (typeof seedClasses)[number]): number => (c.parent ? 1 + depth(seedClasses.find((x) => x.key === c.parent)!) : 0);
+
+  // One batch per level, parents first, so children can point at their parent's id.
   let updated = 0;
-  for (const [i, c] of ordered.entries()) {
-    const fields = {
-      seed_key: c.key,
-      name: c.name,
-      system: c.system,
-      parent_id: c.parent ? (classId.get(c.parent) ?? null) : null,
-      description: c.description,
-      mnemonic: c.mnemonic ?? null,
-      recognition_tip: c.tip ?? null,
-      sort_order: SYSTEMS.indexOf(c.system as (typeof SYSTEMS)[number]) * 1000 + i,
-    };
-    const existing = classByKey.get(c.key);
-    if (!existing) {
-      const { data } = await supabase.from("drug_classes").insert(fields).select("id").single();
-      if (data) classId.set(c.key, data.id);
-      added++;
-    } else if (!existing.edited && !existing.verified) {
-      await supabase.from("drug_classes").update(fields).eq("id", existing.id);
-      updated++;
+  const maxDepth = Math.max(...seedClasses.map(depth));
+  for (let level = 0; level <= maxDepth; level++) {
+    const atLevel = seedClasses.filter((c) => depth(c) === level);
+    const fresh = atLevel.filter((c) => !classByKey.has(c.key)).map((c) => fieldsFor(c, index.get(c.key)!));
+    if (fresh.length) {
+      const { data, error } = await supabase.from("drug_classes").insert(fresh).select("id, seed_key");
+      if (error) throw new Error(error.message);
+      for (const r of data ?? []) classId.set(r.seed_key!, r.id);
+    }
+    const refresh = atLevel
+      .filter((c) => {
+        const e = classByKey.get(c.key);
+        return e && !e.edited && !e.verified;
+      })
+      .map((c) => ({ id: classByKey.get(c.key)!.id, ...fieldsFor(c, index.get(c.key)!) }));
+    if (refresh.length) {
+      const { error } = await supabase.from("drug_classes").upsert(refresh);
+      if (error) throw new Error(error.message);
+      updated += refresh.length;
     }
   }
 
@@ -73,16 +86,27 @@ export async function syncDrugSeed(supabase: DB) {
     if (error) throw new Error(error.message);
   }
   for (let i = 0; i < refreshRows.length; i += 100) {
-    await supabase.from("drugs").upsert(refreshRows.slice(i, i + 100));
+    const { error } = await supabase.from("drugs").upsert(refreshRows.slice(i, i + 100));
+    if (error) throw new Error(error.message);
   }
-  return { added: added + newRows.length, updated: updated + refreshRows.length };
+  return { added: newRows.length, updated: updated + refreshRows.length };
 }
+
+// A missing table means supabase/migrations/0003_drugs.sql hasn't been run yet.
+export const isMissingTable = (e: { code?: string; message?: string } | null) =>
+  !!e && (e.code === "PGRST205" || e.code === "42P01" || /schema cache|does not exist/i.test(e.message ?? ""));
 
 // How many entries in Lengible's list the account doesn't have yet.
 export async function seedStatus(supabase: DB) {
-  const { data } = await supabase.from("drugs").select("seed_key");
+  const { data, error } = await supabase.from("drugs").select("seed_key");
   const have = new Set((data ?? []).map((d) => d.seed_key));
-  return { total: seedDrugs.length, missing: seedDrugs.filter((d) => !have.has(d.key)).length, loaded: (data ?? []).length };
+  return {
+    total: seedDrugs.length,
+    missing: seedDrugs.filter((d) => !have.has(d.key)).length,
+    loaded: (data ?? []).length,
+    tableMissing: isMissingTable(error),
+    error: error?.message,
+  };
 }
 
 export type DrugTreeClass = DrugClass & { children: DrugTreeClass[]; drugs: Pick<Drug, "id" | "name" | "is_prototype" | "verified" | "brands">[] };

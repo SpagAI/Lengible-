@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/supabase/server";
-import { syncDrugSeed, textToList } from "@/lib/drugs";
+import { isMissingTable, syncDrugSeed, textToList } from "@/lib/drugs";
 
 const str = (fd: FormData, k: string) => String(fd.get(k) ?? "").trim();
 
@@ -14,7 +14,10 @@ export async function loadDrugs() {
     revalidatePath("/drugs", "layout");
     return result;
   } catch (e) {
-    return { error: e instanceof Error ? e.message : "Couldn't load the drug list." };
+    const message = e instanceof Error ? e.message : "";
+    if (isMissingTable({ message }))
+      return { error: "The drug tables aren't in your Supabase yet. Run supabase/migrations/0003_drugs.sql in the Supabase SQL Editor, then try again." };
+    return { error: message || "Couldn't load the drug list." };
   }
 }
 
