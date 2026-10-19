@@ -1,15 +1,15 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
+import { supabaseEnv, isSupabaseConfigured } from "./env";
 
 const PUBLIC_PATHS = ["/login", "/offline", "/setup"];
 
 // Refreshes the Supabase session cookie on every request and keeps signed-out visitors on the login page.
 export async function updateSession(request: NextRequest) {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const { url, key } = supabaseEnv();
   const isPublic = PUBLIC_PATHS.some((p) => request.nextUrl.pathname.startsWith(p));
 
-  if (!url || !key) {
+  if (!url || !key || !isSupabaseConfigured()) {
     return isPublic ? NextResponse.next() : NextResponse.redirect(new URL("/setup", request.url));
   }
 
