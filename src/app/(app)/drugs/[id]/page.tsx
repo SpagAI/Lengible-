@@ -6,8 +6,10 @@ import { requireUser } from "@/lib/supabase/server";
 import { getClassPath } from "@/lib/drugs";
 import { findMentions } from "@/lib/mentions";
 import { getCourses } from "@/lib/courses";
+import { syllabusCoverage } from "@/lib/syllabus-coverage";
 import { PageHeader, Card, ButtonLink } from "@/components/ui";
 import { VerifyToggle } from "@/components/drugs/verify-toggle";
+import { SyllabusNote } from "@/components/drugs/syllabus-note";
 import { DrugImages } from "@/components/drugs/drug-images";
 import { Snippet } from "@/components/library/snippet";
 import type { Drug, DrugImage } from "@/lib/supabase/types";
@@ -43,13 +45,15 @@ export default async function DrugPage({ params }: PageProps<"/drugs/[id]">) {
   if (!data) notFound();
   const drug = data as Drug;
 
-  const [path, { data: siblings }, { data: images }, hits, courses] = await Promise.all([
+  const [path, { data: siblings }, { data: images }, hits, courses, coverage] = await Promise.all([
     getClassPath(supabase, drug.class_id),
     supabase.from("drugs").select("id, name, is_prototype").eq("class_id", drug.class_id).neq("id", id).order("is_prototype", { ascending: false }).order("name"),
     supabase.from("drug_images").select("*").eq("drug_id", id).order("created_at"),
     findMentions(supabase, [drug.name.replace(/\s*\(.*\)/, ""), ...drug.brands.filter((b) => b.length > 3)], 12),
     getCourses(supabase),
+    syllabusCoverage(supabase),
   ]);
+  const syllabusTopics = coverage.byClass[drug.class_id] ?? [];
   const courseName = (cid: string | null) => (cid ? (courses.find((c) => c.id === cid)?.name ?? "") : "General");
   const own = ((images ?? []) as DrugImage[]).filter((i) => i.storage_path);
   const { data: signed } = own.length
@@ -88,6 +92,7 @@ export default async function DrugPage({ params }: PageProps<"/drugs/[id]">) {
         )}
         <VerifyToggle id={id} verified={drug.verified} />
       </div>
+      {coverage.hasTopics && <SyllabusNote topics={syllabusTopics} what="drug" />}
 
       {drug.brands.length > 0 && (
         <div className="mb-4 flex flex-wrap items-center gap-1.5">

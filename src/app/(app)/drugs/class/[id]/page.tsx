@@ -4,6 +4,8 @@ import { notFound } from "next/navigation";
 import { ChevronRight, Lightbulb, Plus, Star, BadgeCheck } from "lucide-react";
 import { requireUser } from "@/lib/supabase/server";
 import { getClassPath } from "@/lib/drugs";
+import { syllabusCoverage } from "@/lib/syllabus-coverage";
+import { SyllabusNote } from "@/components/drugs/syllabus-note";
 import { saveClass } from "../../actions";
 import { PageHeader, Card, Field, Button, ButtonLink, inputClass, cx } from "@/components/ui";
 import type { Drug, DrugClass } from "@/lib/supabase/types";
@@ -21,9 +23,10 @@ export default async function DrugClassPage({ params }: PageProps<"/drugs/class/
   const path = await getClassPath(supabase, id);
   const cls = path.at(-1);
   if (!cls || cls.id !== id) notFound();
-  const [{ data: subclasses }, { data: drugs }] = await Promise.all([
+  const [{ data: subclasses }, { data: drugs }, coverage] = await Promise.all([
     supabase.from("drug_classes").select("*").eq("parent_id", id).order("sort_order"),
     supabase.from("drugs").select("*").eq("class_id", id).order("is_prototype", { ascending: false }).order("sort_order").order("name"),
+    syllabusCoverage(supabase),
   ]);
   const subs = (subclasses ?? []) as DrugClass[];
   const { data: subDrugs } = subs.length
@@ -52,6 +55,7 @@ export default async function DrugClassPage({ params }: PageProps<"/drugs/class/
           </ButtonLink>
         }
       />
+      {coverage.hasTopics && <SyllabusNote topics={coverage.byClass[id] ?? []} what="group" partly={subs.some((k) => coverage.byClass[k.id])} />}
       {cls.description && <p className="mb-4 text-sm leading-relaxed">{cls.description}</p>}
 
       {(cls.recognition_tip || cls.mnemonic) && (

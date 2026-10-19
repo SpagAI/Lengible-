@@ -44,5 +44,6 @@ export const SYSTEMS = [
   "Cancer chemotherapy",
   "Endocrine",
   "Immunopharmacology",
+  "Skin",
   "Toxicology & antidotes",
 ] as const;

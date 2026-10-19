@@ -6,6 +6,7 @@ import { PageHeader, Card, ButtonLink } from "@/components/ui";
 import { DrugTree } from "@/components/drugs/drug-tree";
 import { LoadDrugsButton } from "@/components/drugs/load-drugs";
 import { SyllabusView } from "@/components/drugs/syllabus-view";
+import { syllabusCoverage } from "@/lib/syllabus-coverage";
 import Link from "next/link";
 
 export const metadata: Metadata = { title: "Drugs" };
@@ -14,7 +15,7 @@ export default async function DrugsPage({ searchParams }: PageProps<"/drugs">) {
   const sp = await searchParams;
   const view = sp.view === "syllabus" ? "syllabus" : "all";
   const { supabase } = await requireUser();
-  const [status, tree] = await Promise.all([seedStatus(supabase), getDrugTree(supabase)]);
+  const [status, tree, coverage] = await Promise.all([seedStatus(supabase), getDrugTree(supabase), syllabusCoverage(supabase)]);
 
   if (status.loaded === 0 && tree.drugCount === 0) {
     return (
@@ -63,7 +64,7 @@ export default async function DrugsPage({ searchParams }: PageProps<"/drugs">) {
           By my syllabus
         </Link>
       </div>
-      {view === "syllabus" ? <SyllabusView supabase={supabase} /> : <DrugTree systems={tree.systems} />}
+      {view === "syllabus" ? <SyllabusView supabase={supabase} /> : <DrugTree systems={tree.systems} covered={coverage.byClass} hasTopics={coverage.hasTopics} />}
     </>
   );
 }
