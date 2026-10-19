@@ -27,7 +27,14 @@ export default async function ConceptPage({ params }: PageProps<"/library/concep
   if (!data) notFound();
   const concept = data as Concept;
 
-  const [courses, hits] = await Promise.all([getCourses(supabase), findMentions(supabase, [concept.name, ...concept.aliases])]);
+  const [courses, hits, { data: drugMatches }] = await Promise.all([
+    getCourses(supabase),
+    findMentions(supabase, [concept.name, ...concept.aliases]),
+    concept.kind === "drug" || concept.kind === "other"
+      ? supabase.from("drugs").select("id, name").or([concept.name, ...concept.aliases].map((n) => `name.ilike.${n.replace(/[,()]/g, " ").trim()}%`).join(","))
+      : Promise.resolve({ data: [] as { id: string; name: string }[] }),
+  ]);
+  const drugPage = drugMatches?.[0];
   const byCourse = new Map<string, typeof hits>();
   for (const h of hits) byCourse.set(h.course_id ?? "general", [...(byCourse.get(h.course_id ?? "general") ?? []), h]);
   const order = [...courses.map((c) => c.id), "general"].filter((k) => byCourse.has(k));
@@ -42,6 +49,17 @@ export default async function ConceptPage({ params }: PageProps<"/library/concep
         title={concept.name}
         subtitle={`${kindLabel[concept.kind]} · mentioned in ${order.length} ${order.length === 1 ? "course" : "courses"}${concept.aliases.length ? ` · also called ${concept.aliases.join(", ")}` : ""}`}
       />
+
+      {drugPage && (
+        <Link href={`/drugs/${drugPage.id}`} className="mb-4 block">
+          <Card className="flex items-center justify-between gap-3 border-brand/40 hover:bg-surface-2">
+            <span className="text-sm">
+              <b>{drugPage.name}</b> in your drug database: mechanism, uses, side effects, brands
+            </span>
+            <span className="text-brand">→</span>
+          </Card>
+        </Link>
+      )}
 
       {order.length > 1 && (
         <Card className="mb-4 bg-brand-soft/40 text-sm">

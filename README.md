@@ -8,7 +8,7 @@ A personal study app for medical school, starting with Pathology and Pharmacolog
 
 ### 1. Supabase: database and login
 1. Sign up at [supabase.com](https://supabase.com), click **New project**, name it `lengible`, set a database password (save it) and pick the nearest region. Stay on the Free plan.
-2. When the project is ready, open **SQL Editor → New query**, paste everything from `supabase/migrations/0001_foundation.sql` and click **Run**. You should see "Success. No rows returned". Then do the same with `0002_library.sql` (and any later numbered files, in order).
+2. When the project is ready, open **SQL Editor → New query**, paste everything from `supabase/migrations/0001_foundation.sql` and click **Run**. You should see "Success. No rows returned". Then do the same with `0002_library.sql`, `0003_drugs.sql` (and any later numbered files, in order).
 3. Create your account: **Authentication → Users → Add user → Create new user**. Enter your email and a password, and tick **Auto Confirm User**.
 4. Lock it down so nobody else can sign up: **Authentication → Sign In / Providers**, turn off **Allow new users to sign up**, and save.
 5. Copy your keys from **Project Settings → API** (the page may be called "API Keys"). You need the **Project URL** and the **anon / public** key. Never use the `service_role` / secret key in this app.
@@ -58,6 +58,8 @@ src/lib/ai.ts         the only file that talks to the AI provider; caches every 
 src/lib/extract/      reads text from PDF, PowerPoint, Word and text files in the browser
 src/lib/analysis/     AI pass over uploads: timetables, topic lists, drugs/diseases found in each file
 src/lib/quiz.ts       makes the daily quiz from your materials
+src/data/drugs/       Lengible's starting drug list, one file per system (copied into your account, then yours to edit)
+src/lib/dailymed.ts   official label images from NIH DailyMed
 src/lib/supabase/     Supabase clients for the browser, server and proxy, plus the database types
 src/modules/registry.ts  course kinds (pathology, pharmacology, general) and what each one adds
 supabase/migrations/  database schema; run new files in order in the SQL Editor
@@ -70,7 +72,9 @@ public/sw.js          service worker (install + offline)
 1. ✅ Foundation: setup, login, database, courses, responsive layout, PWA
 2. ✅ Library: folders, uploads, text extraction, viewer, "Open in another app", search; timetable and topic-list import (sessions, lecturers, EOPT dates);
    links between courses (drugs, diseases, organisms); daily 10-question quiz with streak; progress dashboard; blue theme, light/dark, collapsible sidebar
-3. Drug database and drug views
+3. ✅ Drug database: 412 drugs in 117 classes/subclasses across the syllabus (marked "needs verification" until you check them), drug tree with search
+   (including suffixes like -olol and brand names), drug pages, group pages with mnemonics, compare drugs or groups, edit/add/verify, official
+   DailyMed images and your own photos, links from your materials
 4. Flashcards with spaced repetition
 5. Quiz engine
 6. Course intelligence

@@ -172,6 +172,58 @@ export type LecturerTopic = { user_id: string; lecturer_id: string; topic_id: st
 
 export type AICacheRow = { key: string; user_id: string; model: string; output: string; created_at: string };
 
+export type DrugClass = {
+  id: string;
+  user_id: string;
+  seed_key: string | null;
+  parent_id: string | null;
+  name: string;
+  system: string;
+  description: string | null;
+  mnemonic: string | null;
+  recognition_tip: string | null;
+  sort_order: number;
+  verified: boolean;
+  edited: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type Drug = {
+  id: string;
+  user_id: string;
+  seed_key: string | null;
+  class_id: string;
+  name: string;
+  is_prototype: boolean;
+  mechanism: string | null;
+  indications: string[];
+  side_effects: string[];
+  contraindications: string[];
+  interactions: string[];
+  pharmacokinetics: string | null;
+  brands: string[];
+  nigerian_context: string | null;
+  notes: string | null;
+  verified: boolean;
+  edited: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DrugImage = {
+  id: string;
+  user_id: string;
+  drug_id: string;
+  url: string | null;
+  storage_path: string | null;
+  source: string;
+  source_url: string | null;
+  caption: string | null;
+  created_at: string;
+};
+
 export type Database = {
   public: {
     Tables: {
@@ -189,6 +241,9 @@ export type Database = {
       file_concepts: Table<FileConcept, "user_id" | "pages">;
       questions: Table<Question, "id" | "user_id" | "course_id" | "topic_id" | "format" | "difficulty" | "options" | "explanation" | "why_wrong" | "source_label" | "source_file_id" | "source_page" | "topic_name" | "flagged" | "flag_note" | "created_at">;
       daily_quizzes: Table<DailyQuiz, "id" | "user_id" | "score" | "completed_at" | "created_at">;
+      drug_classes: Table<DrugClass, "id" | "user_id" | "seed_key" | "parent_id" | "description" | "mnemonic" | "recognition_tip" | "sort_order" | "verified" | "edited" | "created_at" | "updated_at">;
+      drugs: Table<Drug, "id" | "user_id" | "seed_key" | "is_prototype" | "mechanism" | "indications" | "side_effects" | "contraindications" | "interactions" | "pharmacokinetics" | "brands" | "nigerian_context" | "notes" | "verified" | "edited" | "sort_order" | "created_at" | "updated_at">;
+      drug_images: Table<DrugImage, "id" | "user_id" | "url" | "storage_path" | "source_url" | "caption" | "created_at">;
       attempts: Table<Attempt, "id" | "user_id" | "course_id" | "daily_quiz_id" | "chosen" | "created_at">;
       lecturer_topics: Table<LecturerTopic, "user_id">;
       ai_cache: Table<AICacheRow, "user_id" | "created_at">;
