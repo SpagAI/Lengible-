@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui";
+import { postJSON } from "@/lib/fetch-json";
 
 export function StartQuiz() {
   const router = useRouter();
@@ -14,9 +15,9 @@ export function StartQuiz() {
         disabled={state.busy}
         onClick={async () => {
           setState({ busy: true });
-          const res = await fetch("/api/quiz/today", { method: "POST" });
-          const body = await res.json().catch(() => ({ status: "error", message: "No answer from the server." }));
-          if (body.status === "ok") router.refresh();
+          const body = await postJSON<{ status: string; message?: string }>("/api/quiz/today");
+          // Even after an error the quiz may have been saved, so reload to check.
+          router.refresh();
           setState({ busy: false, message: body.status === "ok" ? undefined : body.message });
         }}
       >

@@ -4,6 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/types";
 import { extractText } from "@/lib/extract/client";
 import { finishExtraction, markFailed } from "@/app/(app)/library/actions";
+import { postJSON } from "@/lib/fetch-json";
 
 export type Stage = "waiting" | "uploading" | "reading" | "analysing" | "done" | "review" | "no_text" | "paused" | "error";
 export type Progress = { stage: Stage; message?: string };
@@ -13,8 +14,7 @@ export type AnalyzeResult = { status: "done" | "more" | "review" | "rate_limited
 // Asks the server to run the AI pass for a file, one step at a time (big files take several steps).
 export async function analyze(fileId: string, onProgress: (p: Progress) => void): Promise<AnalyzeResult> {
   for (let step = 0; step < 60; step++) {
-    const res = await fetch(`/api/files/${fileId}/analyze`, { method: "POST" });
-    const body = (await res.json().catch(() => ({ status: "error", message: "The server didn't answer properly." }))) as AnalyzeResult;
+    const body = await postJSON<AnalyzeResult>(`/api/files/${fileId}/analyze`);
     if (body.status !== "more") return body;
     onProgress({ stage: "analysing", message: body.message });
   }

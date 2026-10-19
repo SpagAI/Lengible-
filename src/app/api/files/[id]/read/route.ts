@@ -2,7 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { loadOwnFile } from "@/lib/api";
 import { AIError, generateJSON } from "@/lib/ai";
 
-export const maxDuration = 60;
+// AI calls can be slow on the free tier; Vercel's free plan allows up to 300 seconds.
+export const maxDuration = 300;
 
 // Gemini accepts files up to about 20 MB sent this way.
 const MAX_BYTES = 15 * 1024 * 1024;

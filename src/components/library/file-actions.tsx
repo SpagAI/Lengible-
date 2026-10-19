@@ -8,6 +8,7 @@ import { startReplace } from "@/app/(app)/library/actions";
 import { analyze, runPipeline, type Progress } from "./pipeline";
 import { StageIcon } from "./upload-panel";
 import { Button } from "@/components/ui";
+import { postJSON } from "@/lib/fetch-json";
 
 export function FileActions({
   file,
@@ -43,8 +44,7 @@ export function FileActions({
 
   async function reanalyse(reread: boolean) {
     setProgress({ stage: "analysing", message: reread ? "Reading the file with AI…" : undefined });
-    const res = await fetch(`/api/files/${file.id}/${reread ? "read" : "reset"}`, { method: "POST" });
-    const body = await res.json().catch(() => ({ status: "error", message: "No answer from the server." }));
+    const body = await postJSON<{ status: string; message?: string }>(`/api/files/${file.id}/${reread ? "read" : "reset"}`);
     if (body.status !== "ok") {
       setProgress({ stage: body.status === "rate_limited" ? "paused" : "error", message: body.message });
       return;

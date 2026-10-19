@@ -3,7 +3,8 @@ import { createClient } from "@/lib/supabase/server";
 import { AIError } from "@/lib/ai";
 import { generateDailyQuiz, getTodayQuiz } from "@/lib/quiz";
 
-export const maxDuration = 60;
+// AI calls can be slow on the free tier; Vercel's free plan allows up to 300 seconds.
+export const maxDuration = 300;
 
 // Makes today's quiz if it doesn't exist yet.
 export async function POST() {
