@@ -8,6 +8,8 @@ type DB = SupabaseClient<Database>;
 
 export const DAILY_COUNT = 10;
 
+export type SourceKind = "material" | "past" | "mb" | "standard";
+
 type GeneratedQuestion = {
   stem: string;
   options: string[];
@@ -15,6 +17,7 @@ type GeneratedQuestion = {
   explanation: string;
   why_wrong: { option: number; reason: string }[];
   source: number;
+  reference: string;
   course: string;
   topic: string;
 };
@@ -36,10 +39,14 @@ const schema = {
             items: { type: "object", properties: { option: { type: "integer" }, reason: { type: "string" } }, required: ["option", "reason"] },
           },
           source: { type: "integer", description: "Number of the excerpt the question is based on, or 0 for standard reference knowledge" },
+          reference: {
+            type: "string",
+            description: "When source is 0: the standard textbook and chapter title it comes from, e.g. 'Robbins Basic Pathology — Cell injury and cell death'. No page or chapter numbers.",
+          },
           course: { type: "string", description: "Exactly one of the course names given" },
           topic: { type: "string", description: "Short topic name" },
         },
-        required: ["stem", "options", "answer", "explanation", "why_wrong", "source", "course", "topic"],
+        required: ["stem", "options", "answer", "explanation", "why_wrong", "source", "reference", "course", "topic"],
       },
     },
   },
@@ -55,14 +62,19 @@ function shuffle<T>(arr: T[]) {
   return a;
 }
 
-// Picks excerpts from your materials, favouring courses with an exam or EOPT in the next two weeks.
+export const PAST_TYPES = ["past_questions", "mb_questions"];
+
+// Picks excerpts from your materials, favouring past/MB questions and courses with an exam or EOPT in the next two weeks.
 async function pickSources(supabase: DB) {
-  const [{ data: courses }, { data: exams }, { data: chunkRefs }, { data: topics }] = await Promise.all([
+  const [{ data: courses }, { data: exams }, { data: chunkRefs }, { data: topics }, { data: fileRows }] = await Promise.all([
     supabase.from("courses").select("id, name, is_group").eq("archived", false),
     supabase.from("course_exams").select("course_id, exam_date").eq("confirmed", true),
     supabase.from("chunks").select("id, course_id, file_id, page").not("course_id", "is", null).limit(3000),
     supabase.from("topics").select("course_id, name").neq("session_type", "section").limit(1000),
+    supabase.from("files").select("id, name, doc_type"),
   ]);
+  const fileInfo = new Map((fileRows ?? []).map((f) => [f.id, f]));
+  const isPast = (fileId: string) => PAST_TYPES.includes(fileInfo.get(fileId)?.doc_type ?? "");
   const leaf = (courses ?? []).filter((c) => !c.is_group);
   const soon = new Set((exams ?? []).filter((e) => daysUntil(e.exam_date) >= 0 && daysUntil(e.exam_date) <= 14).map((e) => e.course_id));
   const weight = (courseId: string | null) => (courseId && soon.has(courseId) ? 3 : 1);
@@ -74,8 +86,11 @@ async function pickSources(supabase: DB) {
     .sort((a, b) => b.key - a.key)
     .map((x) => x.c);
   const perCourse = new Map<string, number>();
-  const picked: typeof pool = [];
+  // Up to 3 past/MB question excerpts first, so the quiz feels like the real exam.
+  const picked: typeof pool = pool.filter((c) => isPast(c.file_id)).slice(0, 3);
+  for (const c of picked) perCourse.set(c.course_id!, (perCourse.get(c.course_id!) ?? 0) + 1);
   for (const c of pool) {
+    if (picked.includes(c)) continue;
     const n = perCourse.get(c.course_id!) ?? 0;
     if (n >= 2) continue;
     perCourse.set(c.course_id!, n + 1);
@@ -86,14 +101,11 @@ async function pickSources(supabase: DB) {
   const { data: contents } = picked.length
     ? await supabase.from("chunks").select("id, content").in("id", picked.map((p) => p.id))
     : { data: [] as { id: string; content: string }[] };
-  const { data: files } = picked.length
-    ? await supabase.from("files").select("id, name").in("id", [...new Set(picked.map((p) => p.file_id))])
-    : { data: [] as { id: string; name: string }[] };
-
   const excerpts = picked.map((p) => ({
     ...p,
     content: (contents ?? []).find((c) => c.id === p.id)?.content.slice(0, 2500) ?? "",
-    fileName: (files ?? []).find((f) => f.id === p.file_id)?.name ?? "Your material",
+    fileName: fileInfo.get(p.file_id)?.name ?? "Your material",
+    past: isPast(p.file_id),
   }));
   // Topics from courses with no material yet, so the quiz still covers them.
   const covered = new Set(picked.map((p) => p.course_id));
@@ -106,13 +118,16 @@ export async function generateDailyQuiz(supabase: DB) {
   const { leaf, excerpts, extraTopics } = await pickSources(supabase);
   const courseName = (id: string | null) => leaf.find((c) => c.id === id)?.name ?? "";
 
-  const excerptText = excerpts.map((e, i) => `[${i + 1}] (${courseName(e.course_id)} — ${e.fileName}, page ${e.page})\n${e.content}`).join("\n\n");
+  const excerptText = excerpts
+    .map((e, i) => `[${i + 1}] ${e.past ? "PAST QUESTIONS " : ""}(${courseName(e.course_id)} — ${e.fileName}, page ${e.page})\n${e.content}`)
+    .join("\n\n");
   const prompt =
     `Today is ${today}. Write exactly ${DAILY_COUNT} single-best-answer MCQs for a Nigerian 400-level MBBS student (MB exam standard, medium difficulty).\n` +
     `Courses: ${leaf.map((c) => c.name).join("; ")}.\n` +
     "Base as many questions as possible on the numbered excerpts from the student's own materials (set source to that number). " +
     "If excerpts run out, use established standard knowledge (Robbins pathology, Katzung / Rang & Dale pharmacology level) on the listed topics " +
-    "and set source to 0. Mix the courses. Each question has 5 plausible options and exactly one best answer; explain the answer and say briefly " +
+    "and set source to 0, naming the textbook and chapter title in reference. Excerpts marked PAST QUESTIONS are real past exam questions: " +
+    "re-ask them (or close variants) in the same style. Mix the courses. Each question has 5 plausible options and exactly one best answer; explain the answer and say briefly " +
     "why each wrong option is wrong. Do not invent facts, doses or drugs.\n\n" +
     (excerptText ? `Excerpts:\n${excerptText}\n\n` : "") +
     (extraTopics.length ? `Other topics to draw on: ${extraTopics.map((t) => `${courseName(t.course_id)}: ${t.name}`).join("; ")}\n` : "");
@@ -139,7 +154,7 @@ export async function generateDailyQuiz(supabase: DB) {
         answer: q.answer,
         explanation: q.explanation,
         why_wrong: Object.fromEntries((q.why_wrong ?? []).map((w) => [String(w.option), w.reason])),
-        source_label: ex ? `${ex.fileName}, page ${ex.page}` : "Standard reference",
+        source_label: ex ? `${ex.fileName}, page ${ex.page}` : q.reference?.trim() || "Standard textbook knowledge",
         source_file_id: ex?.file_id ?? null,
         source_page: ex?.page ?? null,
         topic_name: q.topic || null,
@@ -164,5 +179,14 @@ export async function getTodayQuiz(supabase: DB) {
     supabase.from("attempts").select("question_id, chosen, correct").eq("daily_quiz_id", quiz.id),
   ]);
   const ordered = quiz.question_ids.map((id) => (questions ?? []).find((q) => q.id === id)).filter(Boolean) as Question[];
-  return { quiz, questions: ordered, attempts: attempts ?? [] };
+  // What kind of source each question came from, for the reference tag on the card.
+  const fileIds = [...new Set(ordered.flatMap((q) => (q.source_file_id ? [q.source_file_id] : [])))];
+  const { data: files } = fileIds.length ? await supabase.from("files").select("id, doc_type").in("id", fileIds) : { data: [] };
+  const docType = new Map((files ?? []).map((f) => [f.id, f.doc_type]));
+  const sourceKinds: Record<string, SourceKind> = {};
+  for (const q of ordered) {
+    const t = q.source_file_id ? docType.get(q.source_file_id) : null;
+    sourceKinds[q.id] = !q.source_file_id ? "standard" : t === "mb_questions" ? "mb" : t === "past_questions" ? "past" : "material";
+  }
+  return { quiz, questions: ordered, attempts: attempts ?? [], sourceKinds };
 }
