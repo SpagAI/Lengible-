@@ -38,6 +38,7 @@ export type Analysis = {
   suggestedTopic?: string | null;
   pendingReview?: boolean;
   importedAt?: string;
+  skipped?: boolean;
 };
 
 const SYSTEM =
@@ -163,13 +164,25 @@ async function saveConcepts(supabase: DB, fileId: string, found: FoundConcept[])
 
 // Optional fields may be left out by the model; keep the shape simple (plain strings) for the widest support.
 // Runs one step of the AI pass for a file and reports whether more steps are needed.
-export async function analyzeStep(supabase: DB, file: LibraryFile): Promise<StepResult> {
+// Files bigger than this (or textbooks) aren't scanned by the AI automatically: a 1,000-page book would use
+// up a day's free AI allowance. They're still searchable and still appear on drug/disease pages.
+export const AUTO_SCAN_PAGE_LIMIT = 150;
+
+export async function analyzeStep(supabase: DB, file: LibraryFile, full = false): Promise<StepResult> {
   const { data: courseRows } = await supabase.from("courses").select("id, name, is_group").eq("archived", false);
   const courseNames = (courseRows ?? []).filter((c) => !c.is_group).map((c) => c.name);
   const kind: Analysis["kind"] = file.doc_type === "timetable" ? "timetable" : file.doc_type === "topic_list" ? "topic_list" : "concepts";
 
   const { count } = await supabase.from("chunks").select("id", { count: "exact", head: true }).eq("file_id", file.id);
   let state = file.analysis as Analysis | null;
+  const started = !!state && state.kind === kind && !state.importedAt && state.cursor > 0;
+  if (kind === "concepts" && !full && !started && ((count ?? 0) > AUTO_SCAN_PAGE_LIMIT || file.doc_type === "textbook")) {
+    await supabase.from("files").update({ status: "extracted", analysis: { kind, cursor: 0, totalPages: count ?? 0, skipped: true } }).eq("id", file.id);
+    return {
+      status: "skipped",
+      message: `Saved and searchable (${count} pages). Big files aren't scanned by the AI automatically, to save your free allowance; its drugs and diseases still show on their pages. Open it and tap “Scan fully” if you want.`,
+    };
+  }
   if (!state || state.kind !== kind || state.importedAt) {
     state = { kind, cursor: 0, totalPages: count ?? 0, sessions: [], topics: [], concepts: [] };
   }
@@ -223,7 +236,7 @@ export async function analyzeStep(supabase: DB, file: LibraryFile): Promise<Step
         if (e.kind === "not_configured") {
           return { status: "skipped", message: "AI isn't set up yet (add GEMINI_API_KEY in Vercel). The file is saved and searchable." };
         }
-        if (e.kind === "rate_limit") return { status: "rate_limited", message: e.message };
+        if (e.kind === "rate_limit" || e.kind === "busy") return { status: "rate_limited", message: e.message };
         return { status: "error", message: e.message };
       }
       return { status: "error", message: "Something went wrong while analysing." };

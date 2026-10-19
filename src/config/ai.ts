@@ -4,8 +4,10 @@
 export const aiConfig = {
   provider: "gemini" as const,
   model: process.env.GEMINI_MODEL || "gemini-flash-latest",
-  // Retries for temporary failures (rate limits, overloaded model).
-  maxRetries: 2,
+  // Used when the main model is busy or out of free quota (each model has its own free quota).
+  fallbackModel: process.env.GEMINI_FALLBACK_MODEL || "gemini-flash-lite-latest",
+  // Retries for temporary failures (rate limits, overloaded model): waits 2s, 4s, 8s.
+  maxRetries: 3,
   retryBaseDelayMs: 2000,
   temperature: 0.4,
 };

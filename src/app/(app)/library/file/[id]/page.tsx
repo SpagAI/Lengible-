@@ -72,7 +72,21 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
       />
 
       <FileActions
-        file={{ id: file.id, name: file.name, mime: file.mime_type, courseId: file.course_id, status: file.status, ext }}
+        file={{
+          id: file.id,
+          name: file.name,
+          mime: file.mime_type,
+          courseId: file.course_id,
+          status: file.status,
+          ext,
+          scanSkipped: !!(file.analysis as { skipped?: boolean } | null)?.skipped,
+          // A scan that stopped part-way (AI limit or busy) can carry on from where it got to.
+          scanPausedAt:
+            file.status !== "analysed" && !(file.analysis as { pendingReview?: boolean } | null)?.pendingReview
+              ? ((file.analysis as { cursor?: number } | null)?.cursor ?? 0)
+              : 0,
+          pages: file.page_count ?? 0,
+        }}
         viewUrl={viewUrl}
         downloadUrl={download.data?.signedUrl ?? viewUrl}
       />

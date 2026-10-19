@@ -10,7 +10,7 @@ import { createClient } from "@/lib/supabase/server";
 export class AIError extends Error {
   constructor(
     message: string,
-    public kind: "rate_limit" | "not_configured" | "bad_output" | "provider",
+    public kind: "rate_limit" | "busy" | "not_configured" | "bad_output" | "provider",
   ) {
     super(message);
   }
@@ -40,9 +40,9 @@ function getClient() {
   return client;
 }
 
-async function callModel(prompt: string, opts: GenerateOptions): Promise<string> {
+async function callModel(prompt: string, opts: GenerateOptions, model = aiConfig.model): Promise<string> {
   const response = await getClient().models.generateContent({
-    model: aiConfig.model,
+    model,
     contents: opts.file ? [{ role: "user", parts: [{ inlineData: opts.file }, { text: prompt }] }] : prompt,
     config: {
       systemInstruction: opts.system,
@@ -60,28 +60,43 @@ function isRetryable(err: unknown) {
   return err instanceof ApiError && (err.status === 429 || err.status === 500 || err.status === 503);
 }
 
-async function callWithRetry(prompt: string, opts: GenerateOptions): Promise<string> {
+async function tryModel(model: string, prompt: string, opts: GenerateOptions, retries: number): Promise<string> {
   for (let attempt = 0; ; attempt++) {
     try {
-      return await callModel(prompt, opts);
+      return await callModel(prompt, opts, model);
     } catch (err) {
-      if (err instanceof AIError) throw err;
-      if (isRetryable(err) && attempt < aiConfig.maxRetries) {
-        await new Promise((r) => setTimeout(r, aiConfig.retryBaseDelayMs * 2 ** attempt));
-        continue;
-      }
-      if (err instanceof ApiError && err.status === 429) {
-        throw new AIError(
-          "You've hit the free AI limit for now. Your saved questions and cards still work — try generating again in a minute or two.",
-          "rate_limit",
-        );
-      }
-      if (isRetryable(err)) {
-        throw new AIError("The AI service is busy right now. Please try again shortly.", "provider");
-      }
-      throw new AIError("Something went wrong talking to the AI. Please try again.", "provider");
+      if (err instanceof AIError || !isRetryable(err) || attempt >= retries) throw err;
+      await new Promise((r) => setTimeout(r, aiConfig.retryBaseDelayMs * 2 ** attempt));
     }
   }
+}
+
+// Tries the main model (with retries), then the backup model, then explains what went wrong.
+async function callWithRetry(prompt: string, opts: GenerateOptions): Promise<string> {
+  let err: unknown;
+  try {
+    return await tryModel(aiConfig.model, prompt, opts, aiConfig.maxRetries);
+  } catch (e) {
+    err = e;
+  }
+  if (isRetryable(err) && aiConfig.fallbackModel && aiConfig.fallbackModel !== aiConfig.model) {
+    try {
+      return await tryModel(aiConfig.fallbackModel, prompt, opts, 1);
+    } catch (e) {
+      err = e;
+    }
+  }
+  if (err instanceof AIError) throw err;
+  if (err instanceof ApiError && err.status === 429) {
+    throw new AIError(
+      "You've used today's free AI allowance for now (Google's limit). Everything done so far is saved — try again in a few minutes, or tomorrow if it keeps happening.",
+      "rate_limit",
+    );
+  }
+  if (isRetryable(err)) {
+    throw new AIError("Google's AI servers are overloaded at the moment (not a problem with your file). Everything done so far is saved — try again in a few minutes.", "busy");
+  }
+  throw new AIError("Something went wrong talking to the AI. Please try again.", "provider");
 }
 
 function cacheKey(prompt: string, opts: GenerateOptions) {

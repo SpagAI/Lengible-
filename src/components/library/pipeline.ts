@@ -12,9 +12,9 @@ export type Progress = { stage: Stage; message?: string };
 export type AnalyzeResult = { status: "done" | "more" | "review" | "rate_limited" | "skipped" | "error"; message?: string };
 
 // Asks the server to run the AI pass for a file, one step at a time (big files take several steps).
-export async function analyze(fileId: string, onProgress: (p: Progress) => void): Promise<AnalyzeResult> {
-  for (let step = 0; step < 60; step++) {
-    const body = await postJSON<AnalyzeResult>(`/api/files/${fileId}/analyze`);
+export async function analyze(fileId: string, onProgress: (p: Progress) => void, full = false): Promise<AnalyzeResult> {
+  for (let step = 0; step < 300; step++) {
+    const body = await postJSON<AnalyzeResult>(`/api/files/${fileId}/analyze${full ? "?full=1" : ""}`);
     if (body.status !== "more") return body;
     onProgress({ stage: "analysing", message: body.message });
   }

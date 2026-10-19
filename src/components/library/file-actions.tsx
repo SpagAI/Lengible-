@@ -15,7 +15,7 @@ export function FileActions({
   viewUrl,
   downloadUrl,
 }: {
-  file: { id: string; name: string; mime: string | null; courseId: string | null; status: string; ext: string };
+  file: { id: string; name: string; mime: string | null; courseId: string | null; status: string; ext: string; scanSkipped: boolean; scanPausedAt: number; pages: number };
   viewUrl: string;
   downloadUrl: string;
 }) {
@@ -42,14 +42,16 @@ export function FileActions({
     }
   }
 
-  async function reanalyse(reread: boolean) {
+  async function reanalyse(reread: boolean, full = false, resume = false) {
     setProgress({ stage: "analysing", message: reread ? "Reading the file with AI…" : undefined });
-    const body = await postJSON<{ status: string; message?: string }>(`/api/files/${file.id}/${reread ? "read" : "reset"}`);
-    if (body.status !== "ok") {
-      setProgress({ stage: body.status === "rate_limited" ? "paused" : "error", message: body.message });
-      return;
+    if (!resume) {
+      const body = await postJSON<{ status: string; message?: string }>(`/api/files/${file.id}/${reread ? "read" : "reset"}`);
+      if (body.status !== "ok") {
+        setProgress({ stage: body.status === "rate_limited" ? "paused" : "error", message: body.message });
+        return;
+      }
     }
-    const result = await analyze(file.id, setProgress);
+    const result = await analyze(file.id, setProgress, full);
     setProgress({
       stage: result.status === "review" ? "review" : result.status === "rate_limited" ? "paused" : result.status === "error" ? "error" : "done",
       message: result.message,
@@ -79,8 +81,24 @@ export function FileActions({
           <Button type="button" variant="secondary" disabled={!!busy} onClick={() => reanalyse(true)}>
             <Sparkles size={16} /> Read with AI
           </Button>
+        ) : file.scanPausedAt > 0 ? (
+          <Button type="button" variant="secondary" disabled={!!busy} onClick={() => reanalyse(false, true, true)}>
+            <Sparkles size={16} /> Continue scan (from page {file.scanPausedAt})
+          </Button>
+        ) : file.scanSkipped ? (
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={!!busy}
+            onClick={() => {
+              const calls = Math.ceil(file.pages / 12);
+              if (confirm(`Scan all ${file.pages} pages for drugs and diseases? That's about ${calls} AI requests, a big share of the free daily allowance. Leave the page open; if Google's limit is reached it pauses and you can continue later.`)) reanalyse(false, true);
+            }}
+          >
+            <Sparkles size={16} /> Scan fully
+          </Button>
         ) : (
-          <Button type="button" variant="ghost" disabled={!!busy} onClick={() => reanalyse(false)}>
+          <Button type="button" variant="ghost" disabled={!!busy} onClick={() => reanalyse(false, true)}>
             <RefreshCw size={16} /> Re-analyse
           </Button>
         )}
