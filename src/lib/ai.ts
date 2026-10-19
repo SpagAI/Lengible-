@@ -21,6 +21,11 @@ export type GenerateOptions = {
   // A JSON Schema; when given, the model must return JSON matching it.
   schema?: unknown;
   temperature?: number;
+  maxOutputTokens?: number;
+  // A file for the model to read (image or PDF), sent alongside the prompt.
+  file?: { mimeType: string; data: string };
+  // Set false for answers that should differ each time (e.g. a new day's quiz).
+  cache?: boolean;
 };
 
 let client: GoogleGenAI | null = null;
@@ -29,17 +34,20 @@ function getClient() {
   if (!apiKey) {
     throw new AIError("The Gemini API key isn't set up yet. Add GEMINI_API_KEY to your environment.", "not_configured");
   }
-  client ??= new GoogleGenAI({ apiKey });
+  // GEMINI_BASE_URL is optional: point it at a proxy or a local stand-in for testing.
+  const baseUrl = process.env.GEMINI_BASE_URL;
+  client ??= new GoogleGenAI({ apiKey, ...(baseUrl ? { httpOptions: { baseUrl } } : {}) });
   return client;
 }
 
 async function callModel(prompt: string, opts: GenerateOptions): Promise<string> {
   const response = await getClient().models.generateContent({
     model: aiConfig.model,
-    contents: prompt,
+    contents: opts.file ? [{ role: "user", parts: [{ inlineData: opts.file }, { text: prompt }] }] : prompt,
     config: {
       systemInstruction: opts.system,
       temperature: opts.temperature ?? aiConfig.temperature,
+      maxOutputTokens: opts.maxOutputTokens,
       ...(opts.schema ? { responseMimeType: "application/json", responseJsonSchema: opts.schema } : {}),
     },
   });
@@ -78,12 +86,13 @@ async function callWithRetry(prompt: string, opts: GenerateOptions): Promise<str
 
 function cacheKey(prompt: string, opts: GenerateOptions) {
   return createHash("sha256")
-    .update(JSON.stringify([aiConfig.model, opts.system ?? "", opts.schema ?? null, prompt]))
+    .update(JSON.stringify([aiConfig.model, opts.system ?? "", opts.schema ?? null, prompt, opts.file?.data ?? ""]))
     .digest("hex");
 }
 
 // Generates text, reusing a saved answer when the exact same request was made before.
 export async function generateText(prompt: string, opts: GenerateOptions = {}): Promise<string> {
+  if (opts.cache === false) return callWithRetry(prompt, opts);
   const key = cacheKey(prompt, opts);
   const supabase = await createClient();
 

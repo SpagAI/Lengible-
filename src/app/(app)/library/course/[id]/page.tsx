@@ -1,0 +1,126 @@
+import type { Metadata } from "next";
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import { ChevronRight, Folder as FolderIcon } from "lucide-react";
+import { requireUser } from "@/lib/supabase/server";
+import { getCourses } from "@/lib/courses";
+import { courseFromParam, folderPath } from "@/lib/library";
+import { PageHeader, Card, EmptyState } from "@/components/ui";
+import { FileRow } from "@/components/library/file-row";
+import { SearchBox } from "@/components/library/search-box";
+import { LibraryToolbar } from "@/components/library/toolbar";
+import type { Folder, LibraryFile } from "@/lib/supabase/types";
+
+export const metadata: Metadata = { title: "Library" };
+
+export default async function CourseLibraryPage({ params, searchParams }: PageProps<"/library/course/[id]">) {
+  const { id } = await params;
+  const sp = await searchParams;
+  const folderId = typeof sp.folder === "string" ? sp.folder : null;
+  const courseId = courseFromParam(id);
+  const { supabase } = await requireUser();
+
+  const courses = await getCourses(supabase);
+  const course = courseId ? courses.find((c) => c.id === courseId) : null;
+  if (courseId && !course) notFound();
+  const children = course ? courses.filter((c) => c.parent_id === course.id) : [];
+
+  const folderQuery = supabase.from("folders").select("*").order("name");
+  const fileQuery = supabase.from("files").select("*").order("name");
+  const [{ data: folders }, { data: files }, { data: topics }] = await Promise.all([
+    courseId ? folderQuery.eq("course_id", courseId) : folderQuery.is("course_id", null),
+    (courseId ? fileQuery.eq("course_id", courseId) : fileQuery.is("course_id", null)).filter(
+      "folder_id",
+      folderId ? "eq" : "is",
+      folderId ?? null,
+    ),
+    courseId
+      ? supabase.from("topics").select("id, name").in("course_id", [courseId, ...children.map((c) => c.id)]).neq("session_type", "section").order("name")
+      : Promise.resolve({ data: [] as { id: string; name: string }[] }),
+  ]);
+
+  const allFolders = (folders ?? []) as Folder[];
+  const current = folderId ? allFolders.find((f) => f.id === folderId) : null;
+  if (folderId && !current) notFound();
+  const path = folderPath(allFolders, folderId);
+  const subfolders = allFolders.filter((f) => f.parent_id === folderId);
+  const title = course?.name ?? "General";
+  const base = `/library/course/${id}`;
+
+  return (
+    <>
+      <nav className="mb-1 flex flex-wrap items-center gap-1 text-sm text-brand">
+        <Link href="/library">Library</Link>
+        {course?.parent_id && (
+          <>
+            <ChevronRight size={14} className="text-muted" />
+            <Link href={`/library/course/${course.parent_id}`}>{courses.find((c) => c.id === course.parent_id)?.name}</Link>
+          </>
+        )}
+        {path.length > 0 && (
+          <>
+            <ChevronRight size={14} className="text-muted" />
+            <Link href={base}>{title}</Link>
+          </>
+        )}
+        {path.slice(0, -1).map((f) => (
+          <span key={f.id} className="flex items-center gap-1">
+            <ChevronRight size={14} className="text-muted" />
+            <Link href={`${base}?folder=${f.id}`}>{f.name}</Link>
+          </span>
+        ))}
+      </nav>
+      <PageHeader
+        title={current?.name ?? title}
+        subtitle={
+          courseId ? undefined : "Timetables, topic lists and anything that covers every course. Lengible can read timetables and topic lists into your courses."
+        }
+      />
+      <LibraryToolbar
+        courseId={courseId}
+        folder={current ? { id: current.id, name: current.name } : null}
+        topics={topics ?? []}
+      />
+      <div className="mt-4">
+        <SearchBox course={courseId ?? undefined} />
+      </div>
+
+      {!folderId && children.length > 0 && (
+        <Card className="mt-4 divide-y divide-border p-0">
+          {children.map((k) => (
+            <Link key={k.id} href={`/library/course/${k.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-surface-2">
+              <FolderIcon size={20} className="text-brand" />
+              <span className="flex-1 font-medium">{k.name}</span>
+              <ChevronRight size={16} className="text-muted" />
+            </Link>
+          ))}
+        </Card>
+      )}
+
+      {subfolders.length > 0 && (
+        <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
+          {subfolders.map((f) => (
+            <Link key={f.id} href={`${base}?folder=${f.id}`}>
+              <Card className="flex items-center gap-2 p-3 hover:bg-surface-2">
+                <FolderIcon size={20} className="shrink-0 text-brand" />
+                <span className="truncate text-sm font-medium">{f.name}</span>
+              </Card>
+            </Link>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-4">
+        {files?.length ? (
+          <Card className="divide-y divide-border p-0">
+            {(files as LibraryFile[]).map((f) => (
+              <FileRow key={f.id} file={f} />
+            ))}
+          </Card>
+        ) : (
+          !subfolders.length && !children.length && <EmptyState title="Empty">Tap Upload to add files, or New folder to organise them.</EmptyState>
+        )}
+      </div>
+    </>
+  );
+}

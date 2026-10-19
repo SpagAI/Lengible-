@@ -2,10 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { MoreHorizontal } from "lucide-react";
+import { MoreHorizontal, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { navItems, type NavItem } from "@/config/nav";
 import { cx } from "@/components/ui";
 import { SignOutButton } from "@/components/sign-out-button";
+import { ThemeToggle } from "@/components/theme-toggle";
+import { setSidebarCollapsed } from "@/components/theme";
 
 function isActive(pathname: string, href: string) {
   return href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/");
@@ -13,12 +15,13 @@ function isActive(pathname: string, href: string) {
 
 function SideLink({ item, pathname }: { item: NavItem; pathname: string }) {
   const Icon = item.icon;
+  const base = "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium";
   if (item.disabled) {
     return (
-      <span aria-disabled className="flex cursor-not-allowed items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-muted opacity-60">
-        <Icon size={18} />
-        <span className="flex-1 whitespace-nowrap">{item.label}</span>
-        <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-medium whitespace-nowrap">{item.note}</span>
+      <span aria-disabled title={`${item.label} — ${item.note}`} className={cx(base, "cursor-not-allowed text-nav-text/50")}>
+        <Icon size={20} className="shrink-0" />
+        <span className="sidebar-label flex-1 whitespace-nowrap">{item.label}</span>
+        <span className="sidebar-label rounded-full bg-white/10 px-2 py-0.5 text-[10px] whitespace-nowrap">{item.note}</span>
       </span>
     );
   }
@@ -26,13 +29,11 @@ function SideLink({ item, pathname }: { item: NavItem; pathname: string }) {
   return (
     <Link
       href={item.href}
-      className={cx(
-        "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium",
-        active ? "bg-brand-soft text-brand-strong" : "text-text hover:bg-surface-2",
-      )}
+      title={item.label}
+      className={cx(base, active ? "bg-white text-nav shadow-sm" : "text-nav-text hover:bg-white/10 hover:text-white")}
     >
-      <Icon size={18} />
-      {item.label}
+      <Icon size={20} className="shrink-0" />
+      <span className="sidebar-label whitespace-nowrap">{item.label}</span>
     </Link>
   );
 }
@@ -41,29 +42,51 @@ export function AppShell({ children, email }: { children: React.ReactNode; email
   const pathname = usePathname();
   const primary = navItems.filter((i) => i.primary);
   const moreActive = pathname.startsWith("/more") || navItems.some((i) => !i.primary && !i.disabled && isActive(pathname, i.href));
+  const toggle = () => setSidebarCollapsed(document.documentElement.dataset.sidebar !== "collapsed");
 
   return (
     <div className="flex min-h-dvh">
-      {/* Tablet & desktop sidebar */}
-      <aside className="sticky top-0 hidden h-dvh w-64 shrink-0 flex-col border-r border-border bg-surface p-3 md:flex">
-        <Link href="/" className="mb-4 flex items-center gap-2 px-3 py-2">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/icon.svg" alt="" width={28} height={28} className="rounded-lg" />
-          <span className="text-lg font-semibold tracking-tight">Lengible</span>
-        </Link>
+      {/* Tablet & desktop sidebar; collapses down to the logo and icons. */}
+      <aside className="sidebar sticky top-0 hidden h-dvh shrink-0 flex-col overflow-hidden bg-gradient-to-b from-nav to-nav-2 p-3 text-white transition-[width] md:flex">
+        <div className="mb-4 flex items-center gap-2 px-1.5 py-1">
+          <Link href="/" title="Lengible" className="flex min-w-0 items-center gap-2.5">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/logo.svg" alt="Lengible" width={36} height={36} className="shrink-0 rounded-xl ring-1 ring-white/20" />
+            <span className="sidebar-label text-lg font-semibold tracking-tight">Lengible</span>
+          </Link>
+        </div>
         <nav className="flex flex-1 flex-col gap-1">
           {navItems.map((item) => (
             <SideLink key={item.href} item={item} pathname={pathname} />
           ))}
         </nav>
-        <div className="border-t border-border pt-3">
-          <p className="truncate px-3 text-xs text-muted">{email}</p>
-          <SignOutButton className="mt-1 w-full justify-start" />
+        <div className="space-y-1 border-t border-white/15 pt-3">
+          <p className="sidebar-label truncate px-3 text-xs text-nav-text/80">{email}</p>
+          <div className="flex flex-wrap items-center gap-1 text-nav-text">
+            <ThemeToggle compact />
+            <button
+              type="button"
+              onClick={toggle}
+              title="Collapse or expand the sidebar"
+              className="grid size-10 place-items-center rounded-xl hover:bg-white/10"
+            >
+              <PanelLeftClose size={18} className="sidebar-label" />
+              <PanelLeftOpen size={18} className="sidebar-collapsed-only" />
+            </button>
+            <SignOutButton compact className="text-nav-text hover:bg-white/10 hover:text-white" />
+          </div>
         </div>
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <main className="mx-auto w-full max-w-4xl flex-1 px-4 pt-5 pb-28 md:px-8 md:pt-8 md:pb-10">{children}</main>
+        {/* Phone header with the logo. */}
+        <header className="flex items-center gap-2 bg-gradient-to-r from-nav to-nav-2 px-4 py-3 text-white md:hidden">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/logo.svg" alt="" width={30} height={30} className="rounded-lg ring-1 ring-white/20" />
+          <span className="flex-1 text-lg font-semibold tracking-tight">Lengible</span>
+          <ThemeToggle compact className="text-nav-text" />
+        </header>
+        <main className="mx-auto w-full max-w-5xl flex-1 px-4 pt-5 pb-28 md:px-8 md:pt-8 md:pb-10">{children}</main>
       </div>
 
       {/* Phone bottom bar */}

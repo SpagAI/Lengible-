@@ -29,7 +29,8 @@ export type EnvCheck = { name: string; status: "ok" | "missing" | "invalid"; hin
 // Describes what's wrong with the settings without revealing their values.
 export function checkSupabaseEnv(): EnvCheck[] {
   const { url, key } = supabaseEnv();
-  const urlOk = !!url && /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(url);
+  // A bare address (https://abcd.supabase.co, a custom domain, or a local test server) with nothing after it.
+  const urlOk = !!url && /^https?:\/\/[a-z0-9.-]+(:\d+)?$/i.test(url);
   const keyOk = !!key && (key.startsWith("eyJ") || key.startsWith("sb_publishable_"));
   return [
     {

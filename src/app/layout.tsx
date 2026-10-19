@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import { ServiceWorker } from "@/components/service-worker";
+import { preferenceScript } from "@/components/theme";
 import "./globals.css";
 
 const inter = Inter({ variable: "--font-inter", subsets: ["latin"] });
@@ -18,14 +19,17 @@ export const viewport: Viewport = {
   initialScale: 1,
   viewportFit: "cover",
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f6f7f6" },
-    { media: "(prefers-color-scheme: dark)", color: "#0d1312" },
+    { media: "(prefers-color-scheme: light)", color: "#0f3a9e" },
+    { media: "(prefers-color-scheme: dark)", color: "#08101f" },
   ],
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className={`${inter.variable} h-full antialiased`}>
+    <html lang="en" className={`${inter.variable} h-full antialiased`} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: preferenceScript }} />
+      </head>
       <body className="min-h-full font-sans">
         {children}
         <ServiceWorker />

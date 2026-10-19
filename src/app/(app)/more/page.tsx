@@ -5,6 +5,7 @@ import { navItems } from "@/config/nav";
 import { requireUser } from "@/lib/supabase/server";
 import { PageHeader, Card } from "@/components/ui";
 import { SignOutButton } from "@/components/sign-out-button";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 export const metadata: Metadata = { title: "More" };
 
@@ -32,6 +33,8 @@ export default async function MorePage() {
           );
         })}
       </Card>
+      <h2 className="mt-6 mb-2 text-sm font-semibold text-muted">Appearance</h2>
+      <ThemeToggle />
       <SignOutButton className="mt-4" />
     </>
   );

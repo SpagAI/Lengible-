@@ -1,5 +1,23 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="#0f766e"/>
-  <path d="M150 128h52v204h160v52H150z" fill="#ffffff"/>
-  <circle cx="352" cy="176" r="44" fill="#5eead4"/>
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="45%" r="70%">
+      <stop offset="0" stop-color="#1f5fe0"/>
+      <stop offset="1" stop-color="#0b3591"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <!--content-->
+  <polygon points="323,92 420,189 420,323 323,420 189,420 92,323 92,189 189,92" fill="none" stroke="#ffffff" stroke-width="24" stroke-linejoin="miter"/>
+  <g fill="#ffffff">
+    <rect x="182" y="150" width="76" height="200" rx="6"/>
+    <path d="M182 325 L224 297 H318 a8 8 0 0 1 8 8 V345 a8 8 0 0 1 -8 8 H224 Z"/>
+    <rect x="332" y="297" width="22" height="56" rx="7"/>
+  </g>
+  <g stroke="#1546b8" stroke-linecap="round">
+    <line x1="197" y1="182" x2="243" y2="182" stroke-width="9"/>
+    <line x1="197" y1="208" x2="243" y2="208" stroke-width="9"/>
+    <line x1="197" y1="234" x2="243" y2="234" stroke-width="9"/>
+    <path d="M186 323 L226 296" stroke-width="6" fill="none"/>
+  </g>
+  <!--/content-->
 </svg>

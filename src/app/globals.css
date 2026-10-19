@@ -1,35 +1,65 @@
 @import "tailwindcss";
 
 :root {
-  --bg: #f6f7f6;
+  color-scheme: light;
+  --bg: #f2f5fc;
   --surface: #ffffff;
-  --surface-2: #eef2f1;
-  --border: #dde3e1;
-  --text: #16201e;
-  --muted: #5d6b68;
-  --brand: #0f766e;
-  --brand-strong: #0b5f58;
-  --brand-soft: #ccfbf1;
+  --surface-2: #e9effc;
+  --border: #d4ddf0;
+  --text: #0e1a33;
+  --muted: #55627c;
+  --brand: #1a4fd0;
+  --brand-strong: #123c9e;
+  --brand-soft: #dce6ff;
   --on-brand: #ffffff;
-  --danger: #b42318;
-  --warn: #b54708;
+  --nav: #0f3a9e;
+  --nav-2: #0b2f84;
+  --nav-text: #dbe5ff;
+  --danger: #c0262d;
+  --warn: #b25b00;
+  --ok: #157f3c;
 }
 
+/* Dark mode: follows the device unless you pick Light or Dark in the app. */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0d1312;
-    --surface: #141c1b;
-    --surface-2: #1b2524;
-    --border: #2a3634;
-    --text: #e7eeec;
-    --muted: #93a39f;
-    --brand: #2dd4bf;
-    --brand-strong: #5eead4;
-    --brand-soft: #123c38;
-    --on-brand: #06201d;
-    --danger: #f97066;
-    --warn: #fdb022;
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #08101f;
+    --surface: #0f1a30;
+    --surface-2: #15233f;
+    --border: #22345a;
+    --text: #e5ebfa;
+    --muted: #93a2c3;
+    --brand: #5b8cff;
+    --brand-strong: #8db0ff;
+    --brand-soft: #182d61;
+    --on-brand: #061230;
+    --nav: #0b1733;
+    --nav-2: #091228;
+    --nav-text: #c3d2f7;
+    --danger: #ff7a7f;
+    --warn: #ffb547;
+    --ok: #4ad583;
   }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #08101f;
+  --surface: #0f1a30;
+  --surface-2: #15233f;
+  --border: #22345a;
+  --text: #e5ebfa;
+  --muted: #93a2c3;
+  --brand: #5b8cff;
+  --brand-strong: #8db0ff;
+  --brand-soft: #182d61;
+  --on-brand: #061230;
+  --nav: #0b1733;
+  --nav-2: #091228;
+  --nav-text: #c3d2f7;
+  --danger: #ff7a7f;
+  --warn: #ffb547;
+  --ok: #4ad583;
 }
 
 @theme inline {
@@ -43,8 +73,12 @@
   --color-brand-strong: var(--brand-strong);
   --color-brand-soft: var(--brand-soft);
   --color-on-brand: var(--on-brand);
+  --color-nav: var(--nav);
+  --color-nav-2: var(--nav-2);
+  --color-nav-text: var(--nav-text);
   --color-danger: var(--danger);
   --color-warn: var(--warn);
+  --color-ok: var(--ok);
   --font-sans: var(--font-inter), system-ui, sans-serif;
 }
 
@@ -61,3 +95,16 @@ body {
 .pb-safe {
   padding-bottom: env(safe-area-inset-bottom);
 }
+
+/* Dark-mode Tailwind variants follow the same rule as the colour tokens. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *, [data-theme="system-dark"], [data-theme="system-dark"] *));
+
+/* Sidebar width, set before the page paints so it never jumps. */
+.sidebar { width: 16rem; }
+:root[data-sidebar="collapsed"] .sidebar { width: 4.5rem; }
+:root[data-sidebar="collapsed"] .sidebar .sidebar-label { display: none; }
+.sidebar-collapsed-only { display: none; }
+:root[data-sidebar="collapsed"] .sidebar .sidebar-collapsed-only { display: block; }
+:root[data-sidebar="collapsed"] .sidebar nav a,
+:root[data-sidebar="collapsed"] .sidebar nav span[aria-disabled] { justify-content: center; padding-left: 0; padding-right: 0; }
+:root[data-sidebar="collapsed"] .sidebar > div:last-child > div { flex-direction: column; }

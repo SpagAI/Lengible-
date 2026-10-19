@@ -14,11 +14,12 @@ export default async function EditCoursePage({ params }: PageProps<"/courses/[id
   const { supabase } = await requireUser();
   const course = await getCourse(supabase, id);
   if (!course) notFound();
+  const { data: groups } = await supabase.from("courses").select("id, name").eq("is_group", true).order("sort_order");
 
   return (
     <>
       <PageHeader title={`Edit ${course.name}`} />
-      <CourseForm course={course} />
+      <CourseForm course={course} groups={groups ?? []} />
       <form action={deleteCourse} className="mt-10 border-t border-border pt-5">
         <input type="hidden" name="id" value={course.id} />
         <p className="mb-2 text-sm text-muted">Deleting a course removes its exams, lecturers and topics. This can&apos;t be undone.</p>

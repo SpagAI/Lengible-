@@ -65,6 +65,7 @@ export function EmptyState({ title, children }: { title: string; children?: Reac
 
 // Accent colours for courses. Class names are spelled out so Tailwind keeps them.
 export const courseColors: Record<string, { dot: string; soft: string }> = {
+  blue: { dot: "bg-blue-600", soft: "bg-blue-500/10 text-blue-700 dark:text-blue-300" },
   teal: { dot: "bg-teal-500", soft: "bg-teal-500/10 text-teal-700 dark:text-teal-300" },
   rose: { dot: "bg-rose-500", soft: "bg-rose-500/10 text-rose-700 dark:text-rose-300" },
   indigo: { dot: "bg-indigo-500", soft: "bg-indigo-500/10 text-indigo-700 dark:text-indigo-300" },

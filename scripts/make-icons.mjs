@@ -10,7 +10,11 @@ for (const size of [192, 512]) {
 }
 // Maskable icon: full-bleed background, logo inside the safe zone.
 const maskable = Buffer.from(
-  svg.toString().replace('rx="112"', 'rx="0"').replace("<path", '<g transform="translate(51 51) scale(0.8)"><path').replace("</svg>", "</g></svg>")
+  svg
+    .toString()
+    .replace('rx="112"', 'rx="0"')
+    .replace("<!--content-->", '<g transform="translate(76.8 76.8) scale(0.7)">')
+    .replace("<!--/content-->", "</g>"),
 );
 await sharp(maskable).resize(512, 512).png().toFile(`${out}maskable-512.png`);
 await sharp(svg).resize(180, 180).png().toFile(`${out}apple-touch-icon.png`);

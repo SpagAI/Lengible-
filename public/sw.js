@@ -1,7 +1,7 @@
 // Lengible service worker: makes the app installable and keeps the shell usable offline.
 // Pages are fetched fresh when online (your data must stay current); when offline the last
 // copy of a visited page is shown, or the offline page if there is none.
-const VERSION = "v1";
+const VERSION = "v2";
 const STATIC_CACHE = `static-${VERSION}`;
 const PAGE_CACHE = `pages-${VERSION}`;
 const OFFLINE_URL = "/offline";

@@ -17,14 +17,14 @@ export const courseModules: Record<CourseKind, CourseModule> = {
   pathology: {
     kind: "pathology",
     label: "Pathology",
-    defaultSections: ["General Pathology", "Systemic Pathology"],
+    defaultSections: [],
     essayStructure: ["Definition", "Aetiology", "Pathogenesis", "Morphology (gross & micro)", "Clinical features", "Complications"],
     features: [{ href: "/pathology/picture-tests", label: "Picture tests", phase: 7 }],
   },
   pharmacology: {
     kind: "pharmacology",
     label: "Pharmacology",
-    defaultSections: ["General Pharmacology", "Systemic Pharmacology"],
+    defaultSections: [],
     essayStructure: ["Class", "Mechanism of action", "Uses", "Side effects", "Contraindications"],
     features: [{ href: "/drugs", label: "Drug mastery", phase: 3 }],
   },
@@ -37,7 +37,27 @@ export const courseModules: Record<CourseKind, CourseModule> = {
   },
 };
 
-export const defaultCourses: { name: string; code: string; kind: CourseKind; color: string }[] = [
-  { name: "Pathology", code: "PATH", kind: "pathology", color: "rose" },
-  { name: "Pharmacology", code: "PHARM", kind: "pharmacology", color: "teal" },
+// The starting structure: Pathology is a group of four departments, each with lectures,
+// tutorials and practicals; Pharmacology & Therapeutics stands alone. More courses get added in the app.
+export type StarterCourse = { name: string; short: string; code?: string; kind: CourseKind; color: string; children?: StarterCourse[] };
+
+export const defaultCourses: StarterCourse[] = [
+  {
+    name: "Pathology",
+    short: "Path",
+    kind: "pathology",
+    color: "rose",
+    children: [
+      { name: "Histopathology", short: "Histo", kind: "pathology", color: "rose" },
+      { name: "Chemical Pathology", short: "Chem Path", kind: "pathology", color: "amber" },
+      { name: "Haematology", short: "Haem", kind: "pathology", color: "violet" },
+      { name: "Medical Microbiology & Parasitology", short: "MMP", kind: "pathology", color: "sky" },
+    ],
+  },
+  { name: "Pharmacology & Therapeutics", short: "Pharm", kind: "pharmacology", color: "teal" },
 ];
+
+export const STRUCTURE_VERSION = 2;
+
+// Features from later build phases show as "coming soon" until their phase is built.
+export const BUILT_PHASE = 3;

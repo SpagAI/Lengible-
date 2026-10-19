@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import { Plus } from "lucide-react";
 import { requireUser } from "@/lib/supabase/server";
-import { getCourses } from "@/lib/courses";
+import { courseTree, getCourses } from "@/lib/courses";
 import { PageHeader, ButtonLink, EmptyState } from "@/components/ui";
-import { CourseCard } from "@/components/course-card";
+import { CourseList } from "@/components/course-list";
 
 export const metadata: Metadata = { title: "Courses" };
 
@@ -20,15 +20,7 @@ export default async function CoursesPage() {
           </ButtonLink>
         }
       />
-      {courses.length ? (
-        <div className="space-y-2">
-          {courses.map((c) => (
-            <CourseCard key={c.id} course={c} />
-          ))}
-        </div>
-      ) : (
-        <EmptyState title="No courses yet">Add your first course to get started.</EmptyState>
-      )}
+      {courses.length ? <CourseList tree={courseTree(courses)} /> : <EmptyState title="No courses yet">Add your first course to get started.</EmptyState>}
     </>
   );
 }
