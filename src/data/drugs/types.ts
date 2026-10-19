@@ -31,6 +31,7 @@ export const SYSTEMS = [
   "Cardiovascular & renal",
   "Blood",
   "Respiratory",
+  "Autacoids",
   "Gastrointestinal",
   "Central nervous system",
   "Analgesics & anti-inflammatory",

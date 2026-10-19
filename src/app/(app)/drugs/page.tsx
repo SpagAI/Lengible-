@@ -5,10 +5,14 @@ import { getDrugTree, seedStatus } from "@/lib/drugs";
 import { PageHeader, Card, ButtonLink } from "@/components/ui";
 import { DrugTree } from "@/components/drugs/drug-tree";
 import { LoadDrugsButton } from "@/components/drugs/load-drugs";
+import { SyllabusView } from "@/components/drugs/syllabus-view";
+import Link from "next/link";
 
 export const metadata: Metadata = { title: "Drugs" };
 
-export default async function DrugsPage() {
+export default async function DrugsPage({ searchParams }: PageProps<"/drugs">) {
+  const sp = await searchParams;
+  const view = sp.view === "syllabus" ? "syllabus" : "all";
   const { supabase } = await requireUser();
   const [status, tree] = await Promise.all([seedStatus(supabase), getDrugTree(supabase)]);
 
@@ -51,7 +55,15 @@ export default async function DrugsPage() {
           <LoadDrugsButton label="Add them" variant="secondary" />
         </Card>
       )}
-      <DrugTree systems={tree.systems} />
+      <div className="mb-4 flex gap-1 rounded-xl bg-surface-2 p-1 text-sm font-medium">
+        <Link href="/drugs" className={`flex-1 rounded-lg py-2 text-center ${view === "all" ? "bg-surface text-brand shadow-sm" : "text-muted"}`}>
+          All drugs
+        </Link>
+        <Link href="/drugs?view=syllabus" className={`flex-1 rounded-lg py-2 text-center ${view === "syllabus" ? "bg-surface text-brand shadow-sm" : "text-muted"}`}>
+          By my syllabus
+        </Link>
+      </div>
+      {view === "syllabus" ? <SyllabusView supabase={supabase} /> : <DrugTree systems={tree.systems} />}
     </>
   );
 }

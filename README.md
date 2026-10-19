@@ -72,7 +72,7 @@ public/sw.js          service worker (install + offline)
 1. ✅ Foundation: setup, login, database, courses, responsive layout, PWA
 2. ✅ Library: folders, uploads, text extraction, viewer, "Open in another app", search; timetable and topic-list import (sessions, lecturers, EOPT dates);
    links between courses (drugs, diseases, organisms); daily 10-question quiz with streak; progress dashboard; blue theme, light/dark, collapsible sidebar
-3. ✅ Drug database: 412 drugs in 117 classes/subclasses across the syllabus (marked "needs verification" until you check them), drug tree with search
+3. ✅ Drug database: 441 drugs in 122 classes/subclasses across the syllabus (marked "needs verification" until you check them), drug tree with search
    (including suffixes like -olol and brand names), drug pages, group pages with mnemonics, compare drugs or groups, edit/add/verify, official
    DailyMed images and your own photos, links from your materials
 4. Flashcards with spaced repetition
