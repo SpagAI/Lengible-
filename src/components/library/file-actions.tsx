@@ -2,10 +2,11 @@
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Download, ExternalLink, Loader2, RefreshCw, Share2, Sparkles, Upload } from "lucide-react";
+import { Download, ExternalLink, ImageIcon, Loader2, RefreshCw, Share2, Sparkles, Upload } from "lucide-react";
 import { useSupabase } from "@/lib/supabase/client";
-import { startReplace } from "@/app/(app)/library/actions";
-import { analyze, runPipeline, type Progress } from "./pipeline";
+import { finishExtraction, startReplace } from "@/app/(app)/library/actions";
+import { findPicturePages, PICTURE_PAGE_CHARS } from "@/lib/extract/client";
+import { analyze, MAX_PICTURE_PAGES, readPicturePages, runPipeline, type Progress } from "./pipeline";
 import { StageIcon } from "./upload-panel";
 import { Button } from "@/components/ui";
 import { postJSON } from "@/lib/fetch-json";
@@ -59,6 +60,43 @@ export function FileActions({
     router.refresh();
   }
 
+  const isPdf = file.ext.toLowerCase() === ".pdf";
+
+  // Pages that are mostly a picture (or a whole scanned PDF): draw them here and have the AI read them.
+  // Pages already read this way are skipped. The file is then read again in the background.
+  async function readPictures() {
+    setProgress({ stage: "reading", message: "Looking for picture pages…" });
+    try {
+      const data = await (await fetch(viewUrl)).arrayBuffer();
+      const { pictureOnly, pageCount } = await findPicturePages(data);
+      const done = new Set<number>();
+      for (let i = 0; i < pictureOnly.length; i += 200) {
+        const { data: rows } = await supabase.from("chunks").select("page, content").eq("file_id", file.id).in("page", pictureOnly.slice(i, i + 200));
+        for (const r of rows ?? []) if (r.content.length >= PICTURE_PAGE_CHARS) done.add(r.page);
+      }
+      const todo = pictureOnly.filter((p) => !done.has(p));
+      if (!todo.length) {
+        setProgress({ stage: "done", message: pictureOnly.length ? "All picture pages have already been read." : "This file has no picture-only pages." });
+        return;
+      }
+      const r = await readPicturePages(file.id, data, todo, (n, total) => setProgress({ stage: "reading", message: `Read ${n} of ${total} picture pages` }));
+      if (r.done > 0) {
+        if (file.status === "no_text") await finishExtraction(file.id, pageCount, true);
+        await postJSON(`/api/files/${file.id}/reset`);
+      }
+      setProgress({
+        stage: r.status === "done" ? "done" : r.status === "rate_limited" ? "paused" : "error",
+        message:
+          r.status === "done"
+            ? `${r.done} picture pages read. Lengible will now re-read the whole file in the background to update its topics.`
+            : `${r.done} of ${Math.min(todo.length, MAX_PICTURE_PAGES)} read. ${r.message ?? ""} Tap again later to finish.`,
+      });
+      router.refresh();
+    } catch (e) {
+      setProgress({ stage: "error", message: e instanceof Error ? e.message : "Couldn't read the picture pages." });
+    }
+  }
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap gap-2">
@@ -78,7 +116,7 @@ export function FileActions({
           <Upload size={16} /> Replace with new version
         </Button>
         {file.status === "no_text" ? (
-          <Button type="button" variant="secondary" disabled={!!busy} onClick={() => reanalyse(true)}>
+          <Button type="button" variant="secondary" disabled={!!busy} onClick={() => (isPdf ? readPictures() : reanalyse(true))}>
             <Sparkles size={16} /> Read with AI
           </Button>
         ) : file.scanPausedAt > 0 ? (
@@ -91,8 +129,8 @@ export function FileActions({
             variant="secondary"
             disabled={!!busy}
             onClick={() => {
-              const calls = Math.ceil(file.pages / 12);
-              if (confirm(`Scan all ${file.pages} pages for drugs and diseases? That's about ${calls} AI requests, a big share of the free daily allowance. Leave the page open; if Google's limit is reached it pauses and you can continue later.`)) reanalyse(false, true);
+              const calls = Math.ceil(file.pages / 40);
+              if (confirm(`Read all ${file.pages} pages for topics, drugs and diseases? That's about ${calls} AI requests. Keep Lengible open; if Google's free limit is reached it pauses and you can continue later.`)) reanalyse(false, true);
             }}
           >
             <Sparkles size={16} /> Scan fully
@@ -100,6 +138,11 @@ export function FileActions({
         ) : (
           <Button type="button" variant="ghost" disabled={!!busy} onClick={() => reanalyse(false, true)}>
             <RefreshCw size={16} /> Re-analyse
+          </Button>
+        )}
+        {isPdf && file.status !== "no_text" && (
+          <Button type="button" variant="ghost" disabled={!!busy} onClick={readPictures} title="Slides that are mostly a diagram, micrograph or table">
+            <ImageIcon size={16} /> Read picture pages
           </Button>
         )}
       </div>

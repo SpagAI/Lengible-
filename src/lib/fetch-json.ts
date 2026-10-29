@@ -1,9 +1,9 @@
 // Calls one of Lengible's API routes and always returns { status, message }, even when the
 // server times out or sends back an error page instead of JSON.
-export async function postJSON<T extends { status: string; message?: string }>(url: string): Promise<T> {
+export async function postJSON<T extends { status: string; message?: string }>(url: string, body?: unknown): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(url, { method: "POST" });
+    res = await fetch(url, body === undefined ? { method: "POST" } : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   } catch {
     return { status: "error", message: "No connection. Check your internet and try again." } as T;
   }

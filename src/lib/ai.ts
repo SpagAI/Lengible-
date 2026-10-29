@@ -24,6 +24,8 @@ export type GenerateOptions = {
   maxOutputTokens?: number;
   // A file for the model to read (image or PDF), sent alongside the prompt.
   file?: { mimeType: string; data: string };
+  // Several files (e.g. one image per slide), sent in order before the prompt.
+  files?: { mimeType: string; data: string }[];
   // Set false for answers that should differ each time (e.g. a new day's quiz).
   cache?: boolean;
 };
@@ -43,7 +45,10 @@ function getClient() {
 async function callModel(prompt: string, opts: GenerateOptions, model = aiConfig.model): Promise<string> {
   const response = await getClient().models.generateContent({
     model,
-    contents: opts.file ? [{ role: "user", parts: [{ inlineData: opts.file }, { text: prompt }] }] : prompt,
+    contents:
+      opts.file || opts.files?.length
+        ? [{ role: "user", parts: [...[...(opts.file ? [opts.file] : []), ...(opts.files ?? [])].map((f) => ({ inlineData: f })), { text: prompt }] }]
+        : prompt,
     config: {
       systemInstruction: opts.system,
       temperature: opts.temperature ?? aiConfig.temperature,
@@ -101,7 +106,7 @@ async function callWithRetry(prompt: string, opts: GenerateOptions): Promise<str
 
 function cacheKey(prompt: string, opts: GenerateOptions) {
   return createHash("sha256")
-    .update(JSON.stringify([aiConfig.model, opts.system ?? "", opts.schema ?? null, prompt, opts.file?.data ?? ""]))
+    .update(JSON.stringify([aiConfig.model, opts.system ?? "", opts.schema ?? null, prompt, opts.file?.data ?? "", (opts.files ?? []).map((f) => f.data)]))
     .digest("hex");
 }
 

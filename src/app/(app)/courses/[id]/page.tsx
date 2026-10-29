@@ -10,7 +10,7 @@ import { BUILT_PHASE, courseModules } from "@/modules/registry";
 import { PageHeader, Card, ButtonLink, colorFor, cx } from "@/components/ui";
 import { CourseCard } from "@/components/course-card";
 import { ExamList } from "@/components/exam-list";
-import type { Topic } from "@/lib/supabase/types";
+import type { Topic, TopicFile } from "@/lib/supabase/types";
 
 export async function generateMetadata({ params }: PageProps<"/courses/[id]">): Promise<Metadata> {
   const { id } = await params;
@@ -51,6 +51,18 @@ export default async function CoursePage({ params }: PageProps<"/courses/[id]">)
   ]);
   const weak = stats.weak.filter((t) => t.course_id && ids.includes(t.course_id)).slice(0, 5);
 
+  // Which files (and pages) cover each topic, from the AI reading your uploads.
+  const topicIds = (topics ?? []).map((t) => t.id);
+  const links: TopicFile[] = [];
+  for (let i = 0; i < topicIds.length; i += 150) {
+    const { data } = await supabase.from("topic_files").select("*").in("topic_id", topicIds.slice(i, i + 150));
+    links.push(...((data ?? []) as TopicFile[]));
+  }
+  const linkFileIds = [...new Set(links.map((l) => l.file_id))];
+  const { data: linkFiles } = linkFileIds.length ? await supabase.from("files").select("id, name").in("id", linkFileIds) : { data: [] };
+  const fileName = new Map((linkFiles ?? []).map((f) => [f.id, f.name]));
+  const linksOf = (topicId: string) => links.filter((l) => l.topic_id === topicId);
+
   const exams = [...course.course_exams, ...children.flatMap((c) => c.course_exams)];
   const exam = nextExam(exams);
   const answered = attempts?.length ?? 0;
@@ -87,7 +99,7 @@ export default async function CoursePage({ params }: PageProps<"/courses/[id]">)
         <Stat icon={CalendarClock} label="Next exam / EOPT" value={exam ? countdownLabel(exam.days) : "—"} sub={exam ? `${examKindLabel[exam.kind]} · ${names[exam.course_id]}` : "None set"} />
         <Stat icon={Target} label="Quiz accuracy" value={accuracy === null ? "—" : `${accuracy}%`} sub={`${answered} answered`} />
         <Stat icon={FileText} label="Materials" value={String(fileCount ?? 0)} sub="files in Library" />
-        <Stat icon={FolderOpen} label="Topics" value={String(topics?.length ?? 0)} sub="from your topic list" />
+        <Stat icon={FolderOpen} label="Topics" value={String(topics?.length ?? 0)} sub="from your topic list and files" />
       </section>
 
       <section className="mt-4 flex flex-wrap gap-2">
@@ -185,22 +197,68 @@ export default async function CoursePage({ params }: PageProps<"/courses/[id]">)
                     <summary className="cursor-pointer text-sm font-medium">
                       {typeLabels[t]} ({byType.get(t)!.length})
                     </summary>
-                    <ul className="mt-2 space-y-1.5 text-sm">
-                      {byType.get(t)!.map((topic) => (
-                        <li key={topic.id} className="flex justify-between gap-3">
-                          <span>
-                            {children.length ? <span className="text-muted">{names[topic.course_id]} · </span> : null}
-                            {topic.name}
-                          </span>
-                          {topic.lecturer_id && <span className="shrink-0 text-xs text-muted">{lecturerName[topic.lecturer_id]}</span>}
-                        </li>
-                      ))}
+                    <ul className="mt-2 divide-y divide-border text-sm">
+                      {byType.get(t)!.map((topic) => {
+                        const found = linksOf(topic.id);
+                        const subtopics = [...new Set(found.flatMap((l) => l.subtopics))];
+                        const points = [...new Set(found.flatMap((l) => l.key_points))];
+                        return (
+                          <li key={topic.id} className="py-1.5">
+                            <details>
+                              <summary className="flex cursor-pointer list-none items-start gap-2">
+                                <span className="min-w-0 flex-1">
+                                  {children.length ? <span className="text-muted">{names[topic.course_id]} · </span> : null}
+                                  {topic.name}
+                                </span>
+                                {topic.source === "material" ? (
+                                  <span className="shrink-0 rounded-full bg-brand-soft px-2 py-0.5 text-[11px] font-medium text-brand-strong" title="Found by reading your uploads">
+                                    from your files
+                                  </span>
+                                ) : found.length ? (
+                                  <span className="shrink-0 text-[11px] text-muted">{found.length} file{found.length > 1 ? "s" : ""}</span>
+                                ) : null}
+                                {topic.lecturer_id && <span className="shrink-0 text-xs text-muted">{lecturerName[topic.lecturer_id]}</span>}
+                              </summary>
+                              <div className="mt-2 space-y-2 rounded-lg bg-surface p-3 text-xs">
+                                {found.length ? (
+                                  <ul className="space-y-1">
+                                    {found.map((l) => (
+                                      <li key={l.file_id}>
+                                        <Link href={`/library/file/${l.file_id}?page=${l.start_page ?? 1}`} className="text-brand underline">
+                                          {fileName.get(l.file_id) ?? "File"}
+                                        </Link>
+                                        {l.start_page ? <span className="text-muted"> · pages {l.start_page}{l.end_page && l.end_page !== l.start_page ? `–${l.end_page}` : ""}</span> : null}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <p className="text-muted">No uploaded file covers this topic yet.</p>
+                                )}
+                                {subtopics.length > 0 && <p><b>Covers:</b> {subtopics.slice(0, 12).join(" · ")}</p>}
+                                {points.length > 0 && (
+                                  <ul className="list-disc space-y-0.5 pl-4">
+                                    {points.slice(0, 8).map((x) => (
+                                      <li key={x}>{x}</li>
+                                    ))}
+                                  </ul>
+                                )}
+                                <Link href={`/quiz?tab=build&topic=${encodeURIComponent(topic.name)}&course=${topic.course_id}`} className="inline-block font-medium text-brand">
+                                  Quiz me on this →
+                                </Link>
+                              </div>
+                            </details>
+                          </li>
+                        );
+                      })}
                     </ul>
                   </details>
                 ))}
             </div>
           ) : (
-            <p className="text-sm text-muted">No topics yet. Upload your topic list or timetable in the Library and import it.</p>
+            <p className="text-sm text-muted">
+              No topics yet. Upload slides or notes for this course (Lengible finds the topics in them as it reads), or import your topic list
+              or timetable in the Library.
+            </p>
           )}
         </Card>
 

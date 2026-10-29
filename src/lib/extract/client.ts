@@ -5,7 +5,8 @@
 // read by the AI later, on request.
 
 export type ExtractedPage = { page: number; text: string };
-export type Extraction = { pages: ExtractedPage[]; pageCount: number; hasText: boolean };
+// pictureOnly: PDF pages with (almost) no text, e.g. a slide that is one diagram or micrograph, or a scan.
+export type Extraction = { pages: ExtractedPage[]; pageCount: number; hasText: boolean; pictureOnly?: number[] };
 
 const clean = (s: string) =>
   s
@@ -49,7 +50,48 @@ async function extractPdf(data: ArrayBuffer): Promise<Extraction> {
   await task.destroy();
   const chars = pages.reduce((n, p) => n + p.text.length, 0);
   // Fewer than ~40 characters a page means it's a scan.
-  return { pages: pages.filter((p) => p.text), pageCount: pages.length, hasText: chars > 40 * pages.length * 0.5 };
+  return {
+    pages: pages.filter((p) => p.text),
+    pageCount: pages.length,
+    hasText: chars > 40 * pages.length * 0.5,
+    pictureOnly: pages.filter((p) => p.text.length < PICTURE_PAGE_CHARS).map((p) => p.page),
+  };
+}
+
+// A page with less text than this is probably mostly a picture.
+export const PICTURE_PAGE_CHARS = 40;
+
+// Draws chosen PDF pages as JPEG pictures (base64), one at a time, so the AI can read them.
+export async function* renderPdfPages(data: ArrayBuffer, pageNumbers: number[], width = 1100) {
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+  const task = pdfjs.getDocument({ data });
+  const doc = await task.promise;
+  const canvas = document.createElement("canvas");
+  try {
+    for (const n of pageNumbers) {
+      if (n < 1 || n > doc.numPages) continue;
+      const page = await doc.getPage(n);
+      const base = page.getViewport({ scale: 1 });
+      const viewport = page.getViewport({ scale: Math.min(2.5, width / base.width) });
+      canvas.width = Math.round(viewport.width);
+      canvas.height = Math.round(viewport.height);
+      const ctx = canvas.getContext("2d")!;
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+      page.cleanup();
+      yield { page: n, data: canvas.toDataURL("image/jpeg", 0.62).split(",")[1] };
+    }
+  } finally {
+    await task.destroy();
+  }
+}
+
+// The picture-only pages of a PDF, for files uploaded before these pages were read.
+export async function findPicturePages(data: ArrayBuffer) {
+  const r = await extractPdf(data);
+  return { pictureOnly: r.pictureOnly ?? [], pageCount: r.pageCount };
 }
 
 async function extractDocx(data: ArrayBuffer): Promise<Extraction> {

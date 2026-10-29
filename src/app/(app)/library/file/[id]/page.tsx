@@ -35,7 +35,7 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
   const file = data as LibraryFile;
   const ext = file.storage_path.match(/\.[a-z0-9]+$/i)?.[0] ?? "";
 
-  const [courses, { data: folders }, { data: topics }, { data: links }, { data: chunks }, view, download, { data: deck }] = await Promise.all([
+  const [courses, { data: folders }, { data: topics }, { data: links }, { data: chunks }, view, download, { data: deck }, { data: outline }] = await Promise.all([
     getCourses(supabase),
     supabase.from("folders").select("id, name, course_id").order("name"),
     supabase.from("topics").select("id, name, course_id").neq("session_type", "section").order("name"),
@@ -44,7 +44,11 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
     supabase.storage.from("library").createSignedUrl(file.storage_path, 60 * 60),
     supabase.storage.from("library").createSignedUrl(file.storage_path, 60 * 60, { download: `${file.name}${ext}` }),
     supabase.from("decks").select("id").eq("file_id", id).maybeSingle(),
+    supabase.from("topic_files").select("topic_id, start_page, end_page, subtopics, key_points").eq("file_id", id).order("start_page"),
   ]);
+  const topicName = new Map((topics ?? []).map((t) => [t.id, t.name]));
+  const reading = file.analysis as { kind?: string; cursor?: number; totalPages?: number; finished?: boolean; skipped?: boolean; v?: number } | null;
+  const inProgress = reading?.kind === "concepts" && !reading.finished && !reading.skipped && (reading.cursor ?? 0) > 0;
 
   const course = courses.find((c) => c.id === file.course_id);
   const concepts = ((links ?? []) as unknown as { pages: number[]; concepts: Concept }[]).filter((l) => l.concepts);
@@ -107,6 +111,39 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
       )}
 
       {file.status === "failed" && <p className="mt-3 rounded-xl bg-danger/10 p-3 text-sm text-danger">Processing failed: {file.error}</p>}
+      {inProgress && (
+        <p className="mt-3 rounded-xl bg-brand-soft/60 p-3 text-sm text-brand-strong">
+          Lengible is reading this file in the background: page {reading!.cursor} of {reading!.totalPages}. Keep Lengible open (any page) and it carries on.
+        </p>
+      )}
+      {(outline ?? []).length > 0 && (
+        <details className="mt-3 rounded-2xl border border-border bg-surface p-4" open={(outline ?? []).length <= 6}>
+          <summary className="cursor-pointer font-semibold">Topics in this file ({outline!.length})</summary>
+          <ol className="mt-3 space-y-3 text-sm">
+            {outline!.map((o) => (
+              <li key={o.topic_id}>
+                <p className="flex flex-wrap items-baseline gap-x-2">
+                  <span className="font-medium">{topicName.get(o.topic_id) ?? "Topic"}</span>
+                  {o.start_page && (
+                    <Link href={`/library/file/${id}?page=${o.start_page}`} className="text-xs text-brand underline">
+                      pages {o.start_page}
+                      {o.end_page && o.end_page !== o.start_page ? `–${o.end_page}` : ""}
+                    </Link>
+                  )}
+                </p>
+                {o.subtopics.length > 0 && <p className="text-xs text-muted">{o.subtopics.slice(0, 10).join(" · ")}</p>}
+                {o.key_points.length > 0 && (
+                  <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs">
+                    {o.key_points.slice(0, 6).map((k) => (
+                      <li key={k}>{k}</li>
+                    ))}
+                  </ul>
+                )}
+              </li>
+            ))}
+          </ol>
+        </details>
+      )}
       {needsReview && (
         <Link href={`/library/file/${id}/review`} className="mt-3 block rounded-xl bg-brand-soft p-3 text-sm font-medium text-brand-strong">
           Lengible found {file.doc_type === "timetable" ? "sessions and exam dates" : "topics"} in this file. Tap to review and import →

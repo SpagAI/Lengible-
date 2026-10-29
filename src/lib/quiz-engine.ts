@@ -268,6 +268,23 @@ export async function generateStep(supabase: DB, sessionId: string): Promise<Ste
   // Excerpts from your materials for those topics (past/MB question files first in past mode).
   const hits: { chunk_id: string; file_id: string; page: number; course_id: string | null }[] = [];
   for (const t of sampled) {
+    // Pages your files cover this topic on (found when Lengible read them), except in past-question mode.
+    if (s.source !== "past") {
+      const { data: covered } = await supabase.from("topic_files").select("file_id, start_page, end_page").eq("topic_id", t.id);
+      const link = covered?.length ? covered[Math.floor(Math.random() * covered.length)] : null;
+      if (link?.start_page) {
+        const { data: pages } = await supabase
+          .from("chunks")
+          .select("id, file_id, page, course_id")
+          .eq("file_id", link.file_id)
+          .gte("page", link.start_page)
+          .lte("page", link.end_page ?? link.start_page)
+          .limit(200);
+        const pick = shuffle(pages ?? []).slice(0, 2);
+        for (const c of pick) if (!hits.some((x) => x.chunk_id === c.id)) hits.push({ chunk_id: c.id, file_id: c.file_id, page: c.page, course_id: c.course_id });
+        if (pick.length) continue;
+      }
+    }
     const q = orQuery(t.name);
     if (!q) continue;
     const { data: found } = await supabase.rpc("search_chunks", { q, course: t.course_id, lim: 8 });
