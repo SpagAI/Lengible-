@@ -375,6 +375,8 @@ export async function analyzeStep(supabase: DB, file: LibraryFile, full = false)
     const more = (await nextBatch(supabase, file.id, state.cursor)).length > 0;
     state.failures = 0;
     if (more) {
+      // Show the topics found so far straight away, so a big file doesn't stay empty until the last page.
+      if (kind === "concepts") await saveSections(supabase, file, state.sections ?? [], courseRows ?? []);
       await supabase.from("files").update({ analysis: state }).eq("id", file.id);
       return { status: "more", message: `read up to page ${state.cursor} of ${state.totalPages || "?"}`, cursor: state.cursor, total: state.totalPages };
     }
