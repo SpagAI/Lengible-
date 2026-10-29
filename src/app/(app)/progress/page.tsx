@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Flame, Target, Trophy, ListChecks } from "lucide-react";
+import { Flame, Layers, Target, Trophy, ListChecks } from "lucide-react";
 import { requireUser } from "@/lib/supabase/server";
 import { getCourses, leafCourses } from "@/lib/courses";
 import { getStreak } from "@/lib/progress";
+import { getFlashcardStreak, reviewHistory } from "@/lib/flashcards";
 import { addDays, formatDate, todayISO } from "@/lib/dates";
 import { PageHeader, Card, colorFor, cx, EmptyState } from "@/components/ui";
 
@@ -11,12 +12,25 @@ export const metadata: Metadata = { title: "Progress" };
 
 export default async function ProgressPage() {
   const { supabase } = await requireUser();
-  const [courses, streak, { data: attempts }, { data: files }] = await Promise.all([
+  const monthAgo = addDays(todayISO(), -29);
+  const head = { count: "exact", head: true } as const;
+  const [courses, streak, { data: attempts }, { data: files }, cardStreak, history, total_, learned, mature, reviewed, recalled] = await Promise.all([
     getCourses(supabase),
     getStreak(supabase),
     supabase.from("attempts").select("course_id, correct, created_at"),
     supabase.from("files").select("course_id"),
+    getFlashcardStreak(supabase),
+    reviewHistory(supabase),
+    supabase.from("cards").select("id", head).eq("suspended", false),
+    supabase.from("cards").select("id", head).eq("suspended", false).neq("state", 0),
+    supabase.from("cards").select("id", head).eq("suspended", false).eq("state", 2).gte("scheduled_days", 21),
+    // Memory check: answers to cards that were already learned, over the last 30 days.
+    supabase.from("card_reviews").select("id", head).eq("state", 2).gte("review_date", monthAgo),
+    supabase.from("card_reviews").select("id", head).eq("state", 2).gte("review_date", monthAgo).gt("rating", 1),
   ]);
+  const cards = { total: total_.count ?? 0, learned: learned.count ?? 0, mature: mature.count ?? 0 };
+  const retention = reviewed.count ? Math.round((100 * (recalled.count ?? 0)) / reviewed.count) : null;
+  const maxReviews = Math.max(1, ...history.map((h) => h.reviews));
   const all = attempts ?? [];
   const total = all.length;
   const correct = all.filter((a) => a.correct).length;
@@ -44,7 +58,7 @@ export default async function ProgressPage() {
       </section>
 
       <Card className="mt-4">
-        <h2 className="mb-3 font-semibold">Last 14 days</h2>
+        <h2 className="mb-3 font-semibold">Daily quiz, last 14 days</h2>
         <div className="flex h-32 items-end gap-1.5">
           {days.map((d) => {
             const q = byDay.get(d);
@@ -58,6 +72,56 @@ export default async function ProgressPage() {
             );
           })}
         </div>
+      </Card>
+
+      <Card className="mt-4">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <h2 className="flex items-center gap-1.5 font-semibold">
+            <Layers size={16} /> Flashcards
+          </h2>
+          <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-warn/15 px-2 py-0.5 text-xs font-semibold text-warn">
+            <Flame size={13} /> {cardStreak.current} day streak · best {cardStreak.best}
+          </span>
+        </div>
+        {cards.total === 0 ? (
+          <p className="text-sm text-muted">
+            No cards yet.{" "}
+            <Link href="/flashcards" className="text-brand underline">
+              Make your first decks
+            </Link>
+            .
+          </p>
+        ) : (
+          <>
+            <div className="mb-4 grid grid-cols-3 gap-3 text-center">
+              <div>
+                <p className="text-2xl font-semibold">
+                  {cards.learned}
+                  <span className="text-sm font-normal text-muted">/{cards.total}</span>
+                </p>
+                <p className="text-xs text-muted">cards started</p>
+              </div>
+              <div>
+                <p className="text-2xl font-semibold">{cards.mature}</p>
+                <p className="text-xs text-muted">well learned (3+ weeks)</p>
+              </div>
+              <div>
+                <p className="text-2xl font-semibold">{retention === null ? "—" : `${retention}%`}</p>
+                <p className="text-xs text-muted">remembered (30 days)</p>
+              </div>
+            </div>
+            <div className="flex h-24 items-end gap-1.5">
+              {history.map((h) => (
+                <div key={h.day} className="flex h-full flex-1 flex-col items-center justify-end gap-1" title={`${formatDate(h.day)}: ${h.reviews} answers`}>
+                  <span className="text-[10px] text-muted">{h.reviews || ""}</span>
+                  <div className={cx("w-full rounded-t-md", h.reviews ? "bg-brand" : "bg-surface-2")} style={{ height: `${Math.max((100 * h.reviews) / maxReviews, 4)}%` }} />
+                  <span className="text-[10px] text-muted">{formatDate(h.day, { day: "numeric" })}</span>
+                </div>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-muted">Answers per day, last 14 days.</p>
+          </>
+        )}
       </Card>
 
       <Card className="mt-4">

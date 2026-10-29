@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ChevronRight, Trash2 } from "lucide-react";
+import { ChevronRight, Layers, Trash2 } from "lucide-react";
 import { requireUser } from "@/lib/supabase/server";
 import { getCourses } from "@/lib/courses";
 import { courseParam, docTypeLabel, docTypes, formatBytes, importableTypes } from "@/lib/library";
@@ -11,6 +11,7 @@ import { PdfViewer } from "@/components/library/pdf-viewer";
 import { FileActions } from "@/components/library/file-actions";
 import { LinkedText } from "@/components/library/linked-text";
 import { ConfirmButton } from "@/components/confirm-button";
+import { MaterialCardsButton } from "@/components/flashcards/deck-buttons";
 import type { Concept, LibraryFile } from "@/lib/supabase/types";
 
 export async function generateMetadata({ params }: PageProps<"/library/file/[id]">): Promise<Metadata> {
@@ -34,7 +35,7 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
   const file = data as LibraryFile;
   const ext = file.storage_path.match(/\.[a-z0-9]+$/i)?.[0] ?? "";
 
-  const [courses, { data: folders }, { data: topics }, { data: links }, { data: chunks }, view, download] = await Promise.all([
+  const [courses, { data: folders }, { data: topics }, { data: links }, { data: chunks }, view, download, { data: deck }] = await Promise.all([
     getCourses(supabase),
     supabase.from("folders").select("id, name, course_id").order("name"),
     supabase.from("topics").select("id, name, course_id").neq("session_type", "section").order("name"),
@@ -42,6 +43,7 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
     tab === "text" ? supabase.from("chunks").select("page, content").eq("file_id", id).order("page") : Promise.resolve({ data: null }),
     supabase.storage.from("library").createSignedUrl(file.storage_path, 60 * 60),
     supabase.storage.from("library").createSignedUrl(file.storage_path, 60 * 60, { download: `${file.name}${ext}` }),
+    supabase.from("decks").select("id").eq("file_id", id).maybeSingle(),
   ]);
 
   const course = courses.find((c) => c.id === file.course_id);
@@ -90,6 +92,19 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
         viewUrl={viewUrl}
         downloadUrl={download.data?.signedUrl ?? viewUrl}
       />
+
+      {/* Flashcards from this file (needs its text, so not for timetables or files still being read) */}
+      {(file.status === "extracted" || file.status === "analysed") && !importableTypes.includes(file.doc_type) && (
+        <div className="mt-3 flex flex-wrap items-start gap-3">
+          {deck && (
+            <Link href={`/flashcards/deck/${deck.id}`} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand-soft px-4 text-sm font-medium text-brand-strong">
+              <Layers size={16} /> Flashcards from this file
+            </Link>
+          )}
+          {/* Same slot either way, so the result message survives the refresh that creates the deck. */}
+          <MaterialCardsButton fileId={id} label={deck ? "Make more cards" : "Make flashcards from this file"} />
+        </div>
+      )}
 
       {file.status === "failed" && <p className="mt-3 rounded-xl bg-danger/10 p-3 text-sm text-danger">Processing failed: {file.error}</p>}
       {needsReview && (

@@ -8,7 +8,7 @@ A personal study app for medical school, starting with Pathology and Pharmacolog
 
 ### 1. Supabase: database and login
 1. Sign up at [supabase.com](https://supabase.com), click **New project**, name it `lengible`, set a database password (save it) and pick the nearest region. Stay on the Free plan.
-2. When the project is ready, open **SQL Editor → New query**, paste everything from `supabase/migrations/0001_foundation.sql` and click **Run**. You should see "Success. No rows returned". Then do the same with `0002_library.sql`, `0003_drugs.sql` (and any later numbered files, in order).
+2. When the project is ready, open **SQL Editor → New query**, paste everything from `supabase/migrations/0001_foundation.sql` and click **Run**. You should see "Success. No rows returned". Then do the same with `0002_library.sql`, `0003_drugs.sql`, `0004_flashcards.sql` (and any later numbered files, in order).
 3. Create your account: **Authentication → Users → Add user → Create new user**. Enter your email and a password, and tick **Auto Confirm User**.
 4. Lock it down so nobody else can sign up: **Authentication → Sign In / Providers**, turn off **Allow new users to sign up**, and save.
 5. Copy your keys from **Project Settings → API** (the page may be called "API Keys"). You need the **Project URL** and the **anon / public** key. Never use the `service_role` / secret key in this app.
@@ -75,7 +75,9 @@ public/sw.js          service worker (install + offline)
 3. ✅ Drug database: 510 drugs in 127 classes/subclasses across the syllabus (marked "needs verification" until you check them), drug tree with search
    (including suffixes like -olol and brand names), drug pages, group pages with mnemonics, compare drugs or groups, edit/add/verify, official
    DailyMed images and your own photos, links from your materials; "By my syllabus" view, "On your syllabus" badges and a "Syllabus only" filter, with every other group marked as an extra beyond your syllabus
-4. Flashcards with spaced repetition
+4. ✅ Flashcards with spaced repetition (FSRS): decks made from your drug database (one per syllabus group, syllabus cards first) or by
+   AI from any uploaded file, plus your own question/answer, fill-in-the-blank and picture cards; Again/Hard/Good/Easy with the next interval
+   shown, keyboard keys, a daily new-card limit, a flashcard streak (20 answers or nothing left due), stats on Home and Progress
 5. Quiz engine
 6. Course intelligence
 7. Pathology picture tests and on-request diagrams

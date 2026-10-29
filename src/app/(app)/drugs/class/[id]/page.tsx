@@ -6,6 +6,7 @@ import { requireUser } from "@/lib/supabase/server";
 import { getClassPath } from "@/lib/drugs";
 import { syllabusCoverage } from "@/lib/syllabus-coverage";
 import { SyllabusNote } from "@/components/drugs/syllabus-note";
+import { DrugDeckButton } from "@/components/flashcards/deck-buttons";
 import { saveClass } from "../../actions";
 import { PageHeader, Card, Field, Button, ButtonLink, inputClass, cx } from "@/components/ui";
 import type { Drug, DrugClass } from "@/lib/supabase/types";
@@ -17,18 +18,24 @@ export async function generateMetadata({ params }: PageProps<"/drugs/class/[id]"
   return { title: data?.name ?? "Drug group" };
 }
 
+// Making a flashcard deck (a server action on this page) can take a while.
+export const maxDuration = 300;
+
 export default async function DrugClassPage({ params }: PageProps<"/drugs/class/[id]">) {
   const { id } = await params;
   const { supabase } = await requireUser();
   const path = await getClassPath(supabase, id);
   const cls = path.at(-1);
   if (!cls || cls.id !== id) notFound();
-  const [{ data: subclasses }, { data: drugs }, coverage] = await Promise.all([
+  const [{ data: subclasses }, { data: drugs }, coverage, { data: decks }] = await Promise.all([
     supabase.from("drug_classes").select("*").eq("parent_id", id).order("sort_order"),
     supabase.from("drugs").select("*").eq("class_id", id).order("is_prototype", { ascending: false }).order("sort_order").order("name"),
     syllabusCoverage(supabase),
+    // This group's deck, or the deck of a parent group that already holds its cards.
+    supabase.from("decks").select("id, name, drug_class_id").in("drug_class_id", path.map((c) => c.id)),
   ]);
   const subs = (subclasses ?? []) as DrugClass[];
+  const deck = [...path].reverse().map((c) => decks?.find((d) => d.drug_class_id === c.id)).find(Boolean);
   const { data: subDrugs } = subs.length
     ? await supabase.from("drugs").select("id, name, class_id, is_prototype, verified").in("class_id", subs.map((s) => s.id)).order("is_prototype", { ascending: false }).order("name")
     : { data: [] as Pick<Drug, "id" | "name" | "class_id" | "is_prototype" | "verified">[] };
@@ -115,11 +122,20 @@ export default async function DrugClassPage({ params }: PageProps<"/drugs/class/
         </Card>
       ))}
 
-      {ids.length > 1 && (
-        <ButtonLink href={`/drugs/compare?ids=${ids.join(",")}`} variant="secondary" className="mb-4">
-          Compare drugs in this group
-        </ButtonLink>
-      )}
+      <div className="mb-4 flex flex-wrap items-start gap-2">
+        {ids.length > 1 && (
+          <ButtonLink href={`/drugs/compare?ids=${ids.join(",")}`} variant="secondary">
+            Compare drugs in this group
+          </ButtonLink>
+        )}
+        {deck ? (
+          <ButtonLink href={`/flashcards/deck/${deck.id}`} variant="secondary">
+            {deck.drug_class_id === id ? "Flashcards for this group" : `Flashcards (in “${deck.name}”)`}
+          </ButtonLink>
+        ) : (
+          <DrugDeckButton classId={id} />
+        )}
+      </div>
 
       <details className="mt-2 rounded-2xl border border-border bg-surface p-4">
         <summary className="cursor-pointer text-sm font-medium">Edit this group (name, description, memory aid)</summary>

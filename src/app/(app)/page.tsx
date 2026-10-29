@@ -1,8 +1,9 @@
 import Link from "next/link";
-import { CalendarDays, ChevronRight, Flame, FolderOpen, ListChecks } from "lucide-react";
+import { CalendarDays, ChevronRight, Flame, FolderOpen, Layers, ListChecks } from "lucide-react";
 import { requireUser } from "@/lib/supabase/server";
 import { courseTree, getCourses, upcomingExams, examKindLabel } from "@/lib/courses";
 import { getStreak } from "@/lib/progress";
+import { getFlashcardStreak } from "@/lib/flashcards";
 import { addDays, countdownLabel, formatDate, todayISO, TIME_ZONE } from "@/lib/dates";
 import { Card, EmptyState, ButtonLink, colorFor, cx } from "@/components/ui";
 import { CourseList } from "@/components/course-list";
@@ -16,13 +17,17 @@ function greeting() {
 export default async function HomePage() {
   const { supabase } = await requireUser();
   const today = todayISO();
-  const [courses, streak, { data: sessionsToday }, { data: sessionsTomorrow }, { count: reviewCount }] = await Promise.all([
+  const [courses, streak, { data: sessionsToday }, { data: sessionsTomorrow }, { count: reviewCount }, cardStreak, { data: deckCounts }] = await Promise.all([
     getCourses(supabase),
     getStreak(supabase),
     supabase.from("schedule_sessions").select("*").eq("session_date", today).order("start_time"),
     supabase.from("schedule_sessions").select("*").eq("session_date", addDays(today, 1)).order("start_time"),
     supabase.from("files").select("id", { count: "exact", head: true }).filter("analysis->>pendingReview", "eq", "true"),
+    getFlashcardStreak(supabase),
+    supabase.rpc("deck_counts"),
   ]);
+  const cardsDue = (deckCounts ?? []).reduce((n, d) => n + Number(d.due_now), 0);
+  const hasCards = (deckCounts ?? []).some((d) => Number(d.total) > 0);
   const byId = Object.fromEntries(courses.map((c) => [c.id, c]));
   const exams = courses.flatMap((c) => c.course_exams);
   const upcoming = upcomingExams(exams).slice(0, 8);
@@ -94,7 +99,22 @@ export default async function HomePage() {
           </ButtonLink>
         </Card>
 
-        <Card>
+        <Card className="flex flex-col gap-3">
+          <div className="flex items-center gap-2 text-sm text-muted">
+            <Layers size={16} /> Flashcards
+            <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-warn/15 px-2 py-0.5 text-xs font-semibold text-warn">
+              <Flame size={13} /> {cardStreak.current} day streak
+            </span>
+          </div>
+          <p className="font-medium">
+            {!hasCards ? "Make decks from your syllabus to start." : cardsDue ? `${cardsDue} cards due for review.` : cardStreak.doneToday ? "All caught up. Well done!" : "New cards are waiting."}
+          </p>
+          <ButtonLink href={hasCards ? "/flashcards/study" : "/flashcards"} variant={hasCards && (cardsDue || !cardStreak.doneToday) ? "primary" : "secondary"}>
+            {hasCards ? "Study flashcards" : "Set up flashcards"}
+          </ButtonLink>
+        </Card>
+
+        <Card className="sm:col-span-2">
           <div className="mb-2 flex items-center gap-2 text-sm text-muted">
             <CalendarDays size={16} /> {showTomorrow ? "Tomorrow" : "Today"}
           </div>

@@ -12,7 +12,7 @@ type Table<R, O extends keyof R> = {
 
 export type CourseKind = "general" | "pathology" | "pharmacology";
 
-export type Profile = { id: string; display_name: string | null; structure_version: number; created_at: string };
+export type Profile = { id: string; display_name: string | null; structure_version: number; new_cards_per_day: number; created_at: string };
 
 export type Course = {
   id: string;
@@ -224,10 +224,71 @@ export type DrugImage = {
   created_at: string;
 };
 
+export type Deck = {
+  id: string;
+  user_id: string;
+  name: string;
+  course_id: string | null;
+  kind: "drugs" | "material" | "custom";
+  drug_class_id: string | null;
+  file_id: string | null;
+  next_offset: number;
+  created_at: string;
+};
+
+export type CardKind = "basic" | "cloze" | "image";
+
+export type FlashCard = {
+  id: string;
+  user_id: string;
+  deck_id: string;
+  course_id: string | null;
+  kind: CardKind;
+  front: string;
+  back: string;
+  extra: string | null;
+  image_path: string | null;
+  source: "drug" | "material" | "manual";
+  source_ref: string | null;
+  drug_id: string | null;
+  file_id: string | null;
+  page: number | null;
+  priority: number;
+  suspended: boolean;
+  due: string;
+  stability: number;
+  difficulty: number;
+  elapsed_days: number;
+  scheduled_days: number;
+  learning_steps: number;
+  reps: number;
+  lapses: number;
+  state: number;
+  last_review: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CardReview = {
+  id: string;
+  user_id: string;
+  card_id: string;
+  rating: number;
+  state: number;
+  scheduled_days: number;
+  review_date: string;
+  duration_ms: number | null;
+  created_at: string;
+};
+
+export type FlashcardDay = { user_id: string; day: string; reviews: number; done: boolean };
+
+export type DeckCount = { deck_id: string; total: number; due_now: number; new_count: number; suspended: number };
+
 export type Database = {
   public: {
     Tables: {
-      profiles: Table<Profile, "display_name" | "structure_version" | "created_at">;
+      profiles: Table<Profile, "display_name" | "structure_version" | "new_cards_per_day" | "created_at">;
       courses: Table<Course, "id" | "user_id" | "code" | "kind" | "notes" | "color" | "sort_order" | "archived" | "parent_id" | "is_group" | "short_name" | "created_at">;
       course_exams: Table<CourseExam, "id" | "user_id" | "label" | "kind" | "block_id" | "start_time" | "venue" | "confirmed" | "source_file_id" | "created_at">;
       lecturers: Table<Lecturer, "id" | "user_id" | "notes" | "created_at">;
@@ -247,10 +308,20 @@ export type Database = {
       attempts: Table<Attempt, "id" | "user_id" | "course_id" | "daily_quiz_id" | "chosen" | "created_at">;
       lecturer_topics: Table<LecturerTopic, "user_id">;
       ai_cache: Table<AICacheRow, "user_id" | "created_at">;
+      decks: Table<Deck, "id" | "user_id" | "course_id" | "kind" | "drug_class_id" | "file_id" | "next_offset" | "created_at">;
+      cards: Table<
+        FlashCard,
+        | "id" | "user_id" | "course_id" | "kind" | "extra" | "image_path" | "source" | "source_ref" | "drug_id" | "file_id" | "page" | "priority"
+        | "suspended" | "due" | "stability" | "difficulty" | "elapsed_days" | "scheduled_days" | "learning_steps" | "reps" | "lapses" | "state"
+        | "last_review" | "created_at" | "updated_at"
+      >;
+      card_reviews: Table<CardReview, "id" | "user_id" | "scheduled_days" | "duration_ms" | "created_at">;
+      flashcard_days: Table<FlashcardDay, "user_id" | "reviews" | "done">;
     };
     Views: Record<string, never>;
     Functions: {
       search_chunks: { Args: { q: string; course?: string | null; lim?: number }; Returns: SearchHit[] };
+      deck_counts: { Args: Record<string, never>; Returns: DeckCount[] };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
