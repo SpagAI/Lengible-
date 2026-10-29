@@ -1,5 +1,5 @@
 -- Lengible: topics found in your uploaded materials.
--- Run this once in Supabase → SQL Editor, after 0005_quiz_engine.sql.
+-- Run this in Supabase → SQL Editor, after 0005_quiz_engine.sql. Safe to run again.
 
 -- Where a topic came from: your topic list / timetable ("list"), your slides and notes ("material"), or typed by you ("manual").
 alter table public.topics add column if not exists source text not null default 'list';

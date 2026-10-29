@@ -1,5 +1,5 @@
 -- Lengible — Phase 5: full quiz engine.
--- Run this once in Supabase → SQL Editor, after 0004_flashcards.sql.
+-- Run this in Supabase → SQL Editor, after 0004_flashcards.sql. Safe to run again.
 
 -- Questions: formats are quickfire, mcq, tf (multiple true/false), short_essay, long_essay, picture.
 --   answer holds: mcq → option index; tf → [true, false, …] per statement; quickfire/picture → the answer text;
@@ -18,7 +18,7 @@ create index if not exists questions_format_idx on public.questions (format, dif
 create unique index if not exists questions_card_idx on public.questions (user_id, card_id);
 
 -- One quiz you build (or a drug quiz, or a group's mini-quiz).
-create table public.quiz_sessions (
+create table if not exists public.quiz_sessions (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
   mode text not null default 'custom' check (mode in ('custom', 'past', 'drugs', 'group')),
@@ -34,8 +34,9 @@ create table public.quiz_sessions (
   score real,
   created_at timestamptz not null default now()
 );
-create index on public.quiz_sessions (user_id, created_at desc);
+create index if not exists quiz_sessions_user_idx on public.quiz_sessions (user_id, created_at desc);
 alter table public.quiz_sessions enable row level security;
+drop policy if exists "own rows" on public.quiz_sessions;
 create policy "own rows" on public.quiz_sessions for all using (user_id = auth.uid()) with check (user_id = auth.uid());
 
 -- Answers: partial credit (essays, true/false), your typed answer, the AI's marking, and the topic for weak-topic tracking.

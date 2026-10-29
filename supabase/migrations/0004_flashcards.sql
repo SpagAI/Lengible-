@@ -1,10 +1,10 @@
 -- Lengible — Phase 4: flashcards with spaced repetition (FSRS).
--- Run this once in Supabase → SQL Editor, after 0003_drugs.sql.
+-- Run this in Supabase → SQL Editor, after 0003_drugs.sql. Safe to run again.
 
 alter table public.profiles add column if not exists new_cards_per_day int not null default 20;
 
 -- A deck is made from a drug group, from one uploaded file, or by you.
-create table public.decks (
+create table if not exists public.decks (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
   name text not null,
@@ -20,7 +20,7 @@ create table public.decks (
 );
 
 -- One card. The FSRS fields hold its memory state; "due" is when it next comes up.
-create table public.cards (
+create table if not exists public.cards (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
   deck_id uuid not null references public.decks (id) on delete cascade,
@@ -53,11 +53,11 @@ create table public.cards (
   updated_at timestamptz not null default now(),
   unique (user_id, source_ref)
 );
-create index on public.cards (deck_id);
-create index on public.cards (user_id, due) where not suspended;
+create index if not exists cards_deck_idx on public.cards (deck_id);
+create index if not exists cards_due_idx on public.cards (user_id, due) where not suspended;
 
 -- Every answer you give, for progress and streaks.
-create table public.card_reviews (
+create table if not exists public.card_reviews (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
   card_id uuid not null references public.cards (id) on delete cascade,
@@ -68,10 +68,10 @@ create table public.card_reviews (
   duration_ms int,
   created_at timestamptz not null default now()
 );
-create index on public.card_reviews (user_id, review_date);
+create index if not exists card_reviews_day_idx on public.card_reviews (user_id, review_date);
 
 -- A day counts toward the flashcard streak once done = true (20 answers, or nothing left due).
-create table public.flashcard_days (
+create table if not exists public.flashcard_days (
   user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
   day date not null,
   reviews int not null default 0,
@@ -84,6 +84,7 @@ declare t text;
 begin
   foreach t in array array['decks', 'cards', 'card_reviews', 'flashcard_days'] loop
     execute format('alter table public.%I enable row level security', t);
+    execute format('drop policy if exists "own rows" on public.%I', t);
     execute format(
       'create policy "own rows" on public.%I for all using (user_id = auth.uid()) with check (user_id = auth.uid())', t);
   end loop;
