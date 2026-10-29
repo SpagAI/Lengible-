@@ -89,7 +89,7 @@ export default async function FlashcardsPage() {
         </div>
         <div className="ml-auto flex flex-col items-end gap-1">
           {due + newToday > 0 ? (
-            <ButtonLink href="/flashcards/study" className="bg-white text-brand-strong hover:bg-white/90">
+            <ButtonLink href="/flashcards/study" className="bg-white text-[#1238a8] hover:bg-white/90">
               Study now
             </ButtonLink>
           ) : (
