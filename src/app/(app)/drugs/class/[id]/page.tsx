@@ -123,6 +123,10 @@ export default async function DrugClassPage({ params }: PageProps<"/drugs/class/
       ))}
 
       <div className="mb-4 flex flex-wrap items-start gap-2">
+        <ButtonLink href={`/drugs/class/${id}/learn`}>Learn this group</ButtonLink>
+        <ButtonLink href={`/quiz?tab=drugs`} variant="secondary">
+          Drug quizzes
+        </ButtonLink>
         {ids.length > 1 && (
           <ButtonLink href={`/drugs/compare?ids=${ids.join(",")}`} variant="secondary">
             Compare drugs in this group

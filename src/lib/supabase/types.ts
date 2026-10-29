@@ -124,16 +124,29 @@ export type ConceptKind = "drug" | "disease" | "organism" | "investigation" | "o
 export type Concept = { id: string; user_id: string; name: string; kind: ConceptKind; aliases: string[]; notes: string | null; created_at: string };
 export type FileConcept = { user_id: string; file_id: string; concept_id: string; pages: number[] };
 
+export type QuestionFormat = "quickfire" | "mcq" | "tf" | "short_essay" | "long_essay" | "picture";
+export type Difficulty = "easy" | "medium" | "hard";
+export type MarkingPoint = { point: string; marks: number };
+
 export type Question = {
   id: string;
   user_id: string;
   course_id: string | null;
   topic_id: string | null;
-  format: string;
-  difficulty: string;
+  format: QuestionFormat;
+  difficulty: Difficulty;
   stem: string;
   options: string[];
-  answer: number;
+  // mcq: option index · tf: true/false per statement · quickfire/picture: answer text · essays: ""
+  answer: number | boolean[] | string;
+  model_answer: string | null;
+  marking_points: MarkingPoint[] | null;
+  source_kind: "material" | "past" | "mb" | "standard" | "drugs" | "picture" | null;
+  image_path: string | null;
+  card_id: string | null;
+  drug_class_id: string | null;
+  edited: boolean;
+  updated_at: string | null;
   explanation: string | null;
   why_wrong: Record<string, string> | null;
   source_label: string | null;
@@ -161,8 +174,49 @@ export type Attempt = {
   question_id: string;
   course_id: string | null;
   daily_quiz_id: string | null;
+  quiz_session_id: string | null;
   chosen: unknown;
   correct: boolean;
+  score: number | null;
+  answer_text: string | null;
+  feedback: EssayFeedback | null;
+  topic_name: string | null;
+  created_at: string;
+};
+
+export type EssayFeedback = {
+  points: { point: string; marks: number; awarded: number; comment: string }[];
+  feedback: string;
+  missed: string[];
+};
+
+export type QuizSettings = {
+  formats: QuestionFormat[];
+  difficulty: Difficulty;
+  course_ids: string[];
+  topics: string[];
+  source: "slides" | "mixed" | "past";
+  count: number;
+  timed: boolean;
+  negative_marking: boolean;
+  // Drug quizzes
+  drug_types?: string[];
+  scope?: string;
+  // Notes shown on the quiz (e.g. "No picture cards yet").
+  notes?: string[];
+};
+
+export type QuizSession = {
+  id: string;
+  user_id: string;
+  mode: "custom" | "past" | "drugs" | "group";
+  title: string;
+  settings: QuizSettings;
+  question_ids: string[];
+  time_limit: number | null;
+  started_at: string | null;
+  finished_at: string | null;
+  score: number | null;
   created_at: string;
 };
 
@@ -300,12 +354,18 @@ export type Database = {
       schedule_sessions: Table<ScheduleSession, "id" | "user_id" | "block_id" | "topic_id" | "source_file_id" | "start_time" | "end_time" | "session_type" | "lecturer" | "venue" | "groups" | "created_at">;
       concepts: Table<Concept, "id" | "user_id" | "kind" | "aliases" | "notes" | "created_at">;
       file_concepts: Table<FileConcept, "user_id" | "pages">;
-      questions: Table<Question, "id" | "user_id" | "course_id" | "topic_id" | "format" | "difficulty" | "options" | "explanation" | "why_wrong" | "source_label" | "source_file_id" | "source_page" | "topic_name" | "flagged" | "flag_note" | "created_at">;
+      questions: Table<
+        Question,
+        | "id" | "user_id" | "course_id" | "topic_id" | "format" | "difficulty" | "options" | "explanation" | "why_wrong" | "source_label" | "source_file_id"
+        | "source_page" | "topic_name" | "flagged" | "flag_note" | "created_at" | "model_answer" | "marking_points" | "source_kind" | "image_path" | "card_id"
+        | "drug_class_id" | "edited" | "updated_at"
+      >;
+      quiz_sessions: Table<QuizSession, "id" | "user_id" | "mode" | "settings" | "question_ids" | "time_limit" | "started_at" | "finished_at" | "score" | "created_at">;
       daily_quizzes: Table<DailyQuiz, "id" | "user_id" | "score" | "completed_at" | "created_at">;
       drug_classes: Table<DrugClass, "id" | "user_id" | "seed_key" | "parent_id" | "description" | "mnemonic" | "recognition_tip" | "sort_order" | "verified" | "edited" | "created_at" | "updated_at">;
       drugs: Table<Drug, "id" | "user_id" | "seed_key" | "is_prototype" | "mechanism" | "indications" | "side_effects" | "contraindications" | "interactions" | "pharmacokinetics" | "brands" | "nigerian_context" | "notes" | "verified" | "edited" | "sort_order" | "created_at" | "updated_at">;
       drug_images: Table<DrugImage, "id" | "user_id" | "url" | "storage_path" | "source_url" | "caption" | "created_at">;
-      attempts: Table<Attempt, "id" | "user_id" | "course_id" | "daily_quiz_id" | "chosen" | "created_at">;
+      attempts: Table<Attempt, "id" | "user_id" | "course_id" | "daily_quiz_id" | "quiz_session_id" | "chosen" | "score" | "answer_text" | "feedback" | "topic_name" | "created_at">;
       lecturer_topics: Table<LecturerTopic, "user_id">;
       ai_cache: Table<AICacheRow, "user_id" | "created_at">;
       decks: Table<Deck, "id" | "user_id" | "course_id" | "kind" | "drug_class_id" | "file_id" | "next_offset" | "created_at">;

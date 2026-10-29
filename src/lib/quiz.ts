@@ -8,7 +8,7 @@ type DB = SupabaseClient<Database>;
 
 export const DAILY_COUNT = 10;
 
-export type SourceKind = "material" | "past" | "mb" | "standard";
+export type SourceKind = "material" | "past" | "mb" | "standard" | "drugs" | "picture";
 
 type GeneratedQuestion = {
   stem: string;
@@ -106,6 +106,7 @@ async function pickSources(supabase: DB) {
     content: (contents ?? []).find((c) => c.id === p.id)?.content.slice(0, 2500) ?? "",
     fileName: fileInfo.get(p.file_id)?.name ?? "Your material",
     past: isPast(p.file_id),
+    doc_type: fileInfo.get(p.file_id)?.doc_type,
   }));
   // Topics from courses with no material yet, so the quiz still covers them.
   const covered = new Set(picked.map((p) => p.course_id));
@@ -147,8 +148,9 @@ export async function generateDailyQuiz(supabase: DB) {
       const course = leaf.find((c) => c.name.toLowerCase() === q.course?.toLowerCase()) ?? (ex ? leaf.find((c) => c.id === ex.course_id) : undefined);
       return {
         course_id: course?.id ?? null,
-        format: "mcq",
-        difficulty: "medium",
+        format: "mcq" as const,
+        difficulty: "medium" as const,
+        source_kind: (ex ? (ex.doc_type === "mb_questions" ? "mb" : ex.past ? "past" : "material") : "standard") as Question["source_kind"],
         stem: q.stem,
         options: q.options,
         answer: q.answer,

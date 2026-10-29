@@ -1,13 +1,13 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, Flag, Flame, Loader2, XCircle, BookOpen, FileText, History, Library } from "lucide-react";
+import { CheckCircle2, Flag, Flame, Loader2, XCircle } from "lucide-react";
 import type { Question } from "@/lib/supabase/types";
 import type { SourceKind } from "@/lib/quiz";
 import { answerQuestion, finishDailyQuiz, flagQuestion } from "@/app/(app)/quiz/actions";
 import { Button, Card, cx } from "@/components/ui";
+import { ReferenceTag } from "@/components/quiz/reference-tag";
 
 const LETTERS = "ABCDE";
 
@@ -193,35 +193,5 @@ function Feedback({ q, chosen }: { q: Question; chosen: number | undefined }) {
       )}
 
     </div>
-  );
-}
-
-const kindStyle: Record<SourceKind, { label: string; icon: typeof BookOpen; cls: string }> = {
-  past: { label: "Past question", icon: History, cls: "bg-warn/15 text-warn" },
-  mb: { label: "MB question", icon: History, cls: "bg-warn/15 text-warn" },
-  material: { label: "Your material", icon: FileText, cls: "bg-brand-soft text-brand-strong" },
-  standard: { label: "Standard reference", icon: Library, cls: "bg-surface-2 text-muted" },
-};
-
-// Where a question came from, shown in the corner of every question.
-function ReferenceTag({ q, kind }: { q: Question; kind: SourceKind }) {
-  const { label, icon: Icon, cls } = kindStyle[kind];
-  const detail = q.source_label && q.source_label !== "Standard reference" ? q.source_label : kind === "standard" ? "Standard textbook knowledge" : "";
-  const body = (
-    <>
-      <Icon size={13} className="shrink-0" />
-      <span className="shrink-0 font-semibold whitespace-nowrap">{label}</span>
-      {detail && <span className="min-w-0 truncate opacity-90">· {detail}</span>}
-    </>
-  );
-  const className = cx("inline-flex max-w-full items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs", cls);
-  return q.source_file_id ? (
-    <Link href={`/library/file/${q.source_file_id}?page=${q.source_page ?? 1}`} className={cx(className, "underline-offset-2 hover:underline")} title="Open the source">
-      {body}
-    </Link>
-  ) : (
-    <span className={className} title={detail}>
-      {body}
-    </span>
   );
 }

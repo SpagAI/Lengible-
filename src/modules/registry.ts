@@ -60,4 +60,4 @@ export const defaultCourses: StarterCourse[] = [
 export const STRUCTURE_VERSION = 2;
 
 // Features from later build phases show as "coming soon" until their phase is built.
-export const BUILT_PHASE = 4;
+export const BUILT_PHASE = 5;

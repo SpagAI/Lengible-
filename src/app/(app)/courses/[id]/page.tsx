@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { CalendarClock, FolderOpen, Pencil, Target, UserRound, FileText } from "lucide-react";
 import { requireUser } from "@/lib/supabase/server";
+import { topicStats } from "@/lib/quiz-engine";
 import { getCourse, getCourses, nextExam, examKindLabel } from "@/lib/courses";
 import { countdownLabel, formatDate, todayISO, addDays } from "@/lib/dates";
 import { BUILT_PHASE, courseModules } from "@/modules/registry";
@@ -33,11 +34,11 @@ export default async function CoursePage({ params }: PageProps<"/courses/[id]">)
   const names = Object.fromEntries(all.map((c) => [c.id, c.short_name || c.name]));
 
   const today = todayISO();
-  const [{ data: topics }, { data: lecturers }, { count: fileCount }, { data: attempts }, { data: sessions }] = await Promise.all([
+  const [{ data: topics }, { data: lecturers }, { count: fileCount }, { data: attempts }, { data: sessions }, stats] = await Promise.all([
     supabase.from("topics").select("*").in("course_id", ids).order("sort_order").order("name"),
     supabase.from("lecturers").select("id, name").in("course_id", ids),
     supabase.from("files").select("id", { count: "exact", head: true }).in("course_id", ids),
-    supabase.from("attempts").select("correct").in("course_id", ids),
+    supabase.from("attempts").select("correct, score").in("course_id", ids),
     supabase
       .from("schedule_sessions")
       .select("*")
@@ -46,12 +47,14 @@ export default async function CoursePage({ params }: PageProps<"/courses/[id]">)
       .lte("session_date", addDays(today, 6))
       .order("session_date")
       .order("start_time"),
+    topicStats(supabase),
   ]);
+  const weak = stats.weak.filter((t) => t.course_id && ids.includes(t.course_id)).slice(0, 5);
 
   const exams = [...course.course_exams, ...children.flatMap((c) => c.course_exams)];
   const exam = nextExam(exams);
   const answered = attempts?.length ?? 0;
-  const accuracy = answered ? Math.round((100 * (attempts ?? []).filter((a) => a.correct).length) / answered) : null;
+  const accuracy = answered ? Math.round((100 * (attempts ?? []).reduce((t, a) => t + (a.score ?? (a.correct ? 1 : 0)), 0)) / answered) : null;
   const courseModule = courseModules[course.kind];
   const color = colorFor(course.color);
   const lecturerName = Object.fromEntries((lecturers ?? []).map((l) => [l.id, l.name]));
@@ -91,6 +94,11 @@ export default async function CoursePage({ params }: PageProps<"/courses/[id]">)
         <ButtonLink href={`/library/course/${course.id}`} variant="secondary">
           <FolderOpen size={16} /> Open in Library
         </ButtonLink>
+        {!course.is_group && (
+          <ButtonLink href={`/quiz?tab=build&course=${course.id}`} variant="secondary">
+            <Target size={16} /> Quiz this course
+          </ButtonLink>
+        )}
         {courseModule.features.map((f) =>
           f.phase <= BUILT_PHASE ? (
             <Link key={f.href} href={f.href} className={cx("inline-flex min-h-11 items-center rounded-xl px-4 text-sm font-medium", color.soft)}>
@@ -113,6 +121,26 @@ export default async function CoursePage({ params }: PageProps<"/courses/[id]">)
             ))}
           </div>
         </section>
+      )}
+
+      {weak.length > 0 && (
+        <Card className="mt-4">
+          <h2 className="mb-2 font-semibold">Weak topics</h2>
+          <ul className="space-y-2 text-sm">
+            {weak.map((t) => (
+              <li key={t.topic} className="flex flex-wrap items-center gap-2">
+                <span className="min-w-0 flex-1">{t.topic}</span>
+                <span className="font-semibold text-danger">{t.pct}%</span>
+                <Link href={`/library/search?q=${encodeURIComponent(t.topic)}`} className="text-xs text-brand underline">
+                  Revise
+                </Link>
+                <Link href={`/quiz?tab=build&topic=${encodeURIComponent(t.topic)}&course=${t.course_id}`} className="text-xs text-brand underline">
+                  Quiz me
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </Card>
       )}
 
       <section className="mt-6 grid gap-3 md:grid-cols-2">

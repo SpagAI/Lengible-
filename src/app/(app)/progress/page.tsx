@@ -5,6 +5,7 @@ import { requireUser } from "@/lib/supabase/server";
 import { getCourses, leafCourses } from "@/lib/courses";
 import { getStreak } from "@/lib/progress";
 import { getFlashcardStreak, reviewHistory } from "@/lib/flashcards";
+import { topicStats } from "@/lib/quiz-engine";
 import { addDays, formatDate, todayISO } from "@/lib/dates";
 import { PageHeader, Card, colorFor, cx, EmptyState } from "@/components/ui";
 
@@ -14,10 +15,10 @@ export default async function ProgressPage() {
   const { supabase } = await requireUser();
   const monthAgo = addDays(todayISO(), -29);
   const head = { count: "exact", head: true } as const;
-  const [courses, streak, { data: attempts }, { data: files }, cardStreak, history, total_, learned, mature, reviewed, recalled] = await Promise.all([
+  const [courses, streak, { data: attempts }, { data: files }, cardStreak, history, total_, learned, mature, reviewed, recalled, stats] = await Promise.all([
     getCourses(supabase),
     getStreak(supabase),
-    supabase.from("attempts").select("course_id, correct, created_at"),
+    supabase.from("attempts").select("course_id, correct, score, created_at").limit(5000),
     supabase.from("files").select("course_id"),
     getFlashcardStreak(supabase),
     reviewHistory(supabase),
@@ -27,18 +28,19 @@ export default async function ProgressPage() {
     // Memory check: answers to cards that were already learned, over the last 30 days.
     supabase.from("card_reviews").select("id", head).eq("state", 2).gte("review_date", monthAgo),
     supabase.from("card_reviews").select("id", head).eq("state", 2).gte("review_date", monthAgo).gt("rating", 1),
+    topicStats(supabase),
   ]);
   const cards = { total: total_.count ?? 0, learned: learned.count ?? 0, mature: mature.count ?? 0 };
   const retention = reviewed.count ? Math.round((100 * (recalled.count ?? 0)) / reviewed.count) : null;
   const maxReviews = Math.max(1, ...history.map((h) => h.reviews));
   const all = attempts ?? [];
   const total = all.length;
-  const correct = all.filter((a) => a.correct).length;
+  const correct = Math.round(all.reduce((t, a) => t + (a.score ?? (a.correct ? 1 : 0)), 0));
   const leaf = leafCourses(courses);
 
   const perCourse = leaf.map((c) => {
     const mine = all.filter((a) => a.course_id === c.id);
-    const right = mine.filter((a) => a.correct).length;
+    const right = mine.reduce((t, a) => t + (a.score ?? (a.correct ? 1 : 0)), 0);
     return { c, n: mine.length, pct: mine.length ? Math.round((100 * right) / mine.length) : null, files: (files ?? []).filter((f) => f.course_id === c.id).length };
   });
 
@@ -121,6 +123,33 @@ export default async function ProgressPage() {
             </div>
             <p className="mt-2 text-xs text-muted">Answers per day, last 14 days.</p>
           </>
+        )}
+      </Card>
+
+      <Card className="mt-4">
+        <div className="mb-2 flex items-center gap-2">
+          <h2 className="font-semibold">Weak topics</h2>
+          <Link href="/quiz?tab=history" className="ml-auto text-xs text-brand underline">
+            All results
+          </Link>
+        </div>
+        {stats.weak.length ? (
+          <ul className="space-y-2 text-sm">
+            {stats.weak.slice(0, 6).map((t) => (
+              <li key={`${t.course_id}${t.topic}`} className="flex flex-wrap items-center gap-2">
+                <span className="min-w-0 flex-1">
+                  {t.topic}
+                  <span className="text-xs text-muted"> · {courses.find((c) => c.id === t.course_id)?.short_name ?? "General"}</span>
+                </span>
+                <span className="font-semibold text-danger">{t.pct}%</span>
+                <Link href={`/quiz?tab=build&topic=${encodeURIComponent(t.topic)}${t.course_id ? `&course=${t.course_id}` : ""}`} className="text-xs text-brand underline">
+                  Quiz me
+                </Link>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-muted">None yet. Topics you score under 60% on (at least 2 answers) show up here with what to revise.</p>
         )}
       </Card>
 
