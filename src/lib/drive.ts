@@ -116,42 +116,111 @@ export async function getMeta(id: string, resourceKey?: string | null) {
 
 export type ListedFile = { id: string; resourceKey: string | null; name: string; mime: string; path: string; size: number | null; modified: string | null; md5: string | null };
 
-// Every file under a folder, subfolders included (at most 8 levels and 3,000 files).
+const toListed = (f: RawFile, path: string): ListedFile => ({
+  id: f.id,
+  resourceKey: f.resourceKey ?? null,
+  name: f.name,
+  mime: f.mimeType,
+  path,
+  size: f.size ? Number(f.size) : null,
+  modified: f.modifiedTime ?? null,
+  md5: f.md5Checksum ?? null,
+});
+
+export const MAX_FILES = 20000;
+const MAX_DEPTH = 25;
+// Folders asked about in one request ("'a' in parents or 'b' in parents …"), and requests run at once.
+const BATCH = 25;
+const PARALLEL = 4;
+
+// Every file under a folder, all subfolders included, each listed once (a shortcut to a file already seen is skipped).
+// Folders are read level by level, many per request, so even a whole class drive is listed in a few dozen requests.
 export async function listFolder(id: string, resourceKey: string | null) {
   const out: ListedFile[] = [];
-  const keys = resourceKey ? [`${id}/${resourceKey}`] : [];
-  const walk = async (folderId: string, path: string, depth: number) => {
+  const seenFiles = new Map<string, number>();
+  // Files first met through a shortcut: their real folder wins if it's found too.
+  const viaShortcut = new Set<string>();
+  const seenFolders = new Set<string>([id]);
+  const keyOf = new Map<string, string>(resourceKey ? [[id, resourceKey]] : []);
+  let level = [{ id, path: "" }];
+  let folders = 0;
+  let truncated = false;
+  // A "/" inside a folder name would look like a subfolder.
+  const clean = (name: string) => name.replace(/\//g, "∕").trim() || "Untitled folder";
+  const listBatch = async (batch: { id: string; path: string }[]) => {
+    const next: { id: string; path: string }[] = [];
+    const pathOf = new Map(batch.map((b) => [b.id, b.path]));
     let pageToken = "";
     do {
       const res = await call(
         "/files",
         {
-          q: `'${folderId}' in parents and trashed = false`,
-          fields: `nextPageToken,files(${FIELDS})`,
+          q: `(${batch.map((b) => `'${b.id}' in parents`).join(" or ")}) and trashed = false`,
+          fields: `nextPageToken,files(${FIELDS},parents)`,
           pageSize: "1000",
           includeItemsFromAllDrives: "true",
           orderBy: "folder,name",
           ...(pageToken ? { pageToken } : {}),
         },
-        keys,
+        batch.flatMap((b) => (keyOf.has(b.id) ? [`${b.id}/${keyOf.get(b.id)}`] : [])),
       );
-      const j = (await res.json()) as { files: RawFile[]; nextPageToken?: string };
+      const j = (await res.json()) as { files: (RawFile & { parents?: string[] })[]; nextPageToken?: string };
       for (let f of j.files ?? []) {
-        if (f.mimeType === SHORTCUT && f.shortcutDetails) {
+        const parent = (f.parents ?? []).find((x) => pathOf.has(x)) ?? batch[0].id;
+        const path = pathOf.get(parent) ?? "";
+        const shortcut = f.mimeType === SHORTCUT;
+        if (shortcut && f.shortcutDetails) {
           f = { ...f, id: f.shortcutDetails.targetId, mimeType: f.shortcutDetails.targetMimeType, resourceKey: f.shortcutDetails.targetResourceKey };
         }
-        if (f.resourceKey) keys.push(`${f.id}/${f.resourceKey}`);
+        if (f.resourceKey) keyOf.set(f.id, f.resourceKey);
         if (f.mimeType === FOLDER) {
-          if (depth < 8) await walk(f.id, path ? `${path}/${f.name}` : f.name, depth + 1);
-        } else if (out.length < 3000) {
-          out.push({ id: f.id, resourceKey: f.resourceKey ?? null, name: f.name, mime: f.mimeType, path, size: f.size ? Number(f.size) : null, modified: f.modifiedTime ?? null, md5: f.md5Checksum ?? null });
+          if (seenFolders.has(f.id)) continue;
+          seenFolders.add(f.id);
+          next.push({ id: f.id, path: path ? `${path}/${clean(f.name)}` : clean(f.name) });
+        } else if (seenFiles.has(f.id)) {
+          if (!shortcut && viaShortcut.delete(f.id)) out[seenFiles.get(f.id)!] = toListed(f, path);
+        } else {
+          if (out.length >= MAX_FILES) {
+            truncated = true;
+            continue;
+          }
+          seenFiles.set(f.id, out.length);
+          if (shortcut) viaShortcut.add(f.id);
+          out.push(toListed(f, path));
         }
       }
       pageToken = j.nextPageToken ?? "";
     } while (pageToken);
+    return next;
   };
-  await walk(id, "", 0);
-  return out;
+  for (let depth = 0; level.length && depth <= MAX_DEPTH; depth++) {
+    folders += level.length;
+    const batches: { id: string; path: string }[][] = [];
+    for (let k = 0; k < level.length; k += BATCH) batches.push(level.slice(k, k + BATCH));
+    const next: { id: string; path: string }[] = [];
+    for (let k = 0; k < batches.length; k += PARALLEL) {
+      for (const found of await Promise.all(batches.slice(k, k + PARALLEL).map(listBatch))) next.push(...found);
+    }
+    level = next;
+  }
+  if (level.length) truncated = true;
+  // Files only reached through a shortcut: the shortcut doesn't carry their date or size, so look them up
+  // (needed to notice when they change).
+  const lookups = [...viaShortcut];
+  for (let k = 0; k < lookups.length; k += 8) {
+    await Promise.all(
+      lookups.slice(k, k + 8).map(async (fid) => {
+        const at = seenFiles.get(fid)!;
+        try {
+          const m = await getMeta(fid, keyOf.get(fid));
+          out[at] = { ...toListed(m, out[at].path), name: m.name || out[at].name };
+        } catch {}
+      }),
+    );
+  }
+  // Same order as Drive shows: by folder, then name.
+  out.sort((a, b) => a.path.localeCompare(b.path) || a.name.localeCompare(b.name));
+  return { files: out, folders, truncated };
 }
 
 // Downloads a file (Google Docs/Slides as PDF), refusing anything over the 50 MB storage limit.
@@ -166,17 +235,30 @@ export async function download(item: Pick<DriveItem, "drive_id" | "resource_key"
   return buf;
 }
 
+// Every Drive item of a link. Supabase hands back at most 1,000 rows per request, so read it page by page.
+export async function allDriveItems(supabase: DB, sourceId: string) {
+  const rows: DriveItem[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase.from("drive_items").select("*").eq("source_id", sourceId).order("path").order("name").order("id").range(from, from + 999);
+    if (error) throw error;
+    rows.push(...((data ?? []) as DriveItem[]));
+    if (!data || data.length < 1000) return rows;
+  }
+}
+
 // Saves what the link contains: new files are added, changed ones marked, gone ones marked removed.
 // Course and type are guessed from folder and file names; your own choices are kept.
 export async function syncItems(supabase: DB, source: DriveSource) {
   let files: ListedFile[];
-  if (source.is_folder) files = await listFolder(source.drive_id, source.resource_key);
+  let folders = 0;
+  let truncated = false;
+  if (source.is_folder) ({ files, folders, truncated } = await listFolder(source.drive_id, source.resource_key));
   else {
     const m = await getMeta(source.drive_id, source.resource_key);
     files = [{ id: m.id, resourceKey: m.resourceKey ?? source.resource_key, name: m.name, mime: m.mimeType, path: "", size: m.size ? Number(m.size) : null, modified: m.modifiedTime ?? null, md5: m.md5Checksum ?? null }];
   }
-  const [{ data: existing }, { data: courses }] = await Promise.all([
-    supabase.from("drive_items").select("*").eq("source_id", source.id),
+  const [existing, { data: courses }] = await Promise.all([
+    allDriveItems(supabase, source.id),
     supabase.from("courses").select("id, name, short_name, is_group").eq("archived", false),
   ]);
   const leaf = (courses ?? []).filter((c) => !c.is_group);
@@ -196,6 +278,7 @@ export async function syncItems(supabase: DB, source: DriveSource) {
   const seen = new Set<string>();
   const fresh = [];
   let changed = 0;
+  const updates: { id: string; update: Database["public"]["Tables"]["drive_items"]["Update"] }[] = [];
   for (const f of files) {
     seen.add(f.id);
     const old = have.get(f.id);
@@ -232,17 +315,26 @@ export async function syncItems(supabase: DB, source: DriveSource) {
     const isNewer = !!f.modified && !!old.imported_modified && new Date(f.modified) > new Date(old.imported_modified) && (!f.md5 || f.md5 !== old.md5);
     const update: Database["public"]["Tables"]["drive_items"]["Update"] = {};
     if (moved) Object.assign(update, { name: f.name, path: f.path });
-    if (f.modified !== old.modified_time || f.md5 !== old.md5 || f.size !== old.size_bytes) Object.assign(update, { modified_time: f.modified, md5: f.md5, size_bytes: f.size });
+    const time = (x: string | null) => (x ? new Date(x).getTime() : 0);
+    if (time(f.modified) !== time(old.modified_time) || (f.md5 ?? null) !== (old.md5 ?? null) || (f.size ?? null) !== (old.size_bytes == null ? null : Number(old.size_bytes))) Object.assign(update, { modified_time: f.modified, md5: f.md5, size_bytes: f.size });
     if (old.status === "imported" && isNewer) {
       update.status = "changed";
       changed++;
     }
     if (old.status === "removed") update.status = old.file_id ? "imported" : "new";
-    if (Object.keys(update).length) await supabase.from("drive_items").update(update).eq("id", old.id);
+    if (Object.keys(update).length) updates.push({ id: old.id, update });
   }
-  for (let i = 0; i < fresh.length; i += 200) await supabase.from("drive_items").insert(fresh.slice(i, i + 200));
-  const gone = [...have.values()].filter((i) => !seen.has(i.drive_id) && i.status !== "removed");
+  // Saved 20 at a time (a big drive can have thousands of files moved or renamed at once).
+  for (let k = 0; k < updates.length; k += 20) {
+    await Promise.all(updates.slice(k, k + 20).map((u) => supabase.from("drive_items").update(u.update).eq("id", u.id)));
+  }
+  for (let i = 0; i < fresh.length; i += 200) {
+    const { error } = await supabase.from("drive_items").insert(fresh.slice(i, i + 200));
+    if (error) throw new Error(`Couldn't save the file list: ${error.message}`);
+  }
+  // When the listing stopped early, files not reached aren't gone from Drive.
+  const gone = truncated ? [] : [...have.values()].filter((i) => !seen.has(i.drive_id) && i.status !== "removed");
   if (gone.length) await supabase.from("drive_items").update({ status: "removed" }).in("id", gone.map((i) => i.id));
   await supabase.from("drive_sources").update({ last_checked_at: new Date().toISOString() }).eq("id", source.id);
-  return { added: fresh.filter((f) => f.status === "new").length, changed, removed: gone.length, total: files.length };
+  return { added: fresh.filter((f) => f.status === "new").length, changed, removed: gone.length, total: files.length, folders, truncated };
 }

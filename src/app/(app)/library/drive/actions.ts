@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/supabase/server";
-import { DriveError, getMeta, parseDriveLink, syncItems } from "@/lib/drive";
+import { DriveError, getMeta, MAX_FILES, parseDriveLink, syncItems } from "@/lib/drive";
 import { isMissingTable } from "@/lib/drugs";
 import type { DriveSource } from "@/lib/supabase/types";
 
@@ -48,11 +48,13 @@ export async function checkDriveLink(id: string) {
   try {
     const r = await syncItems(supabase, source as DriveSource);
     revalidatePath(`/library/drive/${id}`);
+    const found = `Found ${r.total.toLocaleString()} file${r.total === 1 ? "" : "s"}${r.folders ? ` in ${r.folders.toLocaleString()} folder${r.folders === 1 ? "" : "s"}` : ""}.`;
+    const what =
+      r.added || r.changed || r.removed
+        ? [r.added && `${r.added} new`, r.changed && `${r.changed} changed`, r.removed && `${r.removed} no longer in the link`].filter(Boolean).join(" · ")
+        : "No changes since last check.";
     return {
-      message:
-        r.added || r.changed || r.removed
-          ? [r.added && `${r.added} new`, r.changed && `${r.changed} changed`, r.removed && `${r.removed} no longer in the link`].filter(Boolean).join(" · ")
-          : "No changes since last check.",
+      message: `${found} ${what}${r.truncated ? ` This link is very big: only the first ${MAX_FILES.toLocaleString()} files are listed. Add its subfolders as separate links to see the rest.` : ""}`,
     };
   } catch (e) {
     return { error: problem(e) };

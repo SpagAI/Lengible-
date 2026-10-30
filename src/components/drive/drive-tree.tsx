@@ -80,7 +80,10 @@ export function DriveTree({
           : i.status === "new" || i.status === "changed" || i.status === "error",
   );
   // Folders you've folded away.
-  const [closed, setClosed] = useState<Set<string>>(new Set());
+  // A big link opens with its top folders folded, so the page stays quick.
+  const [closed, setClosed] = useState<Set<string>>(() =>
+    initial.length > 300 ? new Set(initial.flatMap((i) => (i.path ? [i.path.split("/")[0]] : []))) : new Set(),
+  );
   const hidden = (path: string) => [...closed].some((c) => path === c || path.startsWith(`${c}/`));
   // Tick state of a folder ("" = the whole link): all, some or none of the files that can be read.
   const within = (path: string) => items.filter((i) => i.status !== "skipped" && (!path || i.path === path || i.path.startsWith(`${path}/`)));

@@ -8,7 +8,8 @@ import { removeDriveLink } from "../actions";
 import { PageHeader } from "@/components/ui";
 import { ConfirmButton } from "@/components/confirm-button";
 import { DriveTree } from "@/components/drive/drive-tree";
-import type { DriveItem, DriveSource } from "@/lib/supabase/types";
+import { allDriveItems } from "@/lib/drive";
+import type { DriveSource } from "@/lib/supabase/types";
 
 export const metadata: Metadata = { title: "Drive link" };
 // "Check for changes" lists the whole shared folder again.
@@ -20,12 +21,12 @@ export default async function DriveSourcePage({ params }: PageProps<"/library/dr
   const { data } = await supabase.from("drive_sources").select("*").eq("id", id).maybeSingle();
   if (!data) notFound();
   const source = data as DriveSource;
-  const [{ data: items }, courses] = await Promise.all([
-    supabase.from("drive_items").select("*").eq("source_id", id).order("path").order("name").limit(5000),
+  const [items, courses] = await Promise.all([
+    allDriveItems(supabase, id),
     getCourses(supabase),
   ]);
   // Whether each file brought in has been processed yet ("uploaded" = stored, waiting for you to tap Process).
-  const fileIds = (items ?? []).flatMap((i) => (i.file_id ? [i.file_id] : []));
+  const fileIds = items.flatMap((i) => (i.file_id ? [i.file_id] : []));
   const fileStatus: Record<string, string> = {};
   for (let k = 0; k < fileIds.length; k += 200) {
     const { data } = await supabase.from("files").select("id, status").in("id", fileIds.slice(k, k + 200));
@@ -46,7 +47,7 @@ export default async function DriveSourcePage({ params }: PageProps<"/library/dr
       />
       <DriveTree
         sourceId={id}
-        items={(items ?? []) as DriveItem[]}
+        items={items}
         courses={leafCourses(courses).map((c) => ({ id: c.id, name: c.name }))}
         autoImport={source.auto_import}
         fileStatus={fileStatus}

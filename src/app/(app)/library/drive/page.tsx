@@ -7,7 +7,7 @@ import { formatDate } from "@/lib/dates";
 import { PageHeader, Card } from "@/components/ui";
 import { AddLinkForm } from "@/components/drive/add-link-form";
 import { DriveSetup } from "@/components/drive/drive-setup";
-import type { DriveItem, DriveSource } from "@/lib/supabase/types";
+import type { DriveSource } from "@/lib/supabase/types";
 
 export const metadata: Metadata = { title: "Google Drive links" };
 // Listing a big shared folder (in the add-link action) can take a while.
@@ -15,10 +15,20 @@ export const maxDuration = 300;
 
 export default async function DrivePage() {
   const { supabase } = await requireUser();
-  const [{ data: sources, error }, { data: items }] = await Promise.all([
-    supabase.from("drive_sources").select("*").order("created_at"),
-    supabase.from("drive_items").select("source_id, status, include").limit(10000),
-  ]);
+  const { data: sources, error } = await supabase.from("drive_sources").select("*").order("created_at");
+  // Counted in the database (a class drive can hold thousands of files; row reads stop at 1,000).
+  const items = () => supabase.from("drive_items").select("id", { count: "exact", head: true });
+  const counts = await Promise.all(
+    ((sources ?? []) as DriveSource[]).map(async (s) => {
+      const [total, inLib, waiting] = await Promise.all([
+        items().eq("source_id", s.id),
+        items().eq("source_id", s.id).eq("status", "imported"),
+        items().eq("source_id", s.id).eq("include", true).in("status", ["new", "changed"]),
+      ]);
+      return [s.id, { total: total.count ?? 0, inLib: inLib.count ?? 0, waiting: waiting.count ?? 0 }] as const;
+    }),
+  );
+  const countOf = new Map(counts);
   const hasKey = !!(process.env.GOOGLE_DRIVE_API_KEY || process.env.GOOGLE_API_KEY);
 
   return (
@@ -45,16 +55,14 @@ export default async function DrivePage() {
           {((sources ?? []) as DriveSource[]).length > 0 && (
             <Card className="divide-y divide-border p-0">
               {((sources ?? []) as DriveSource[]).map((s) => {
-                const mine = ((items ?? []) as Pick<DriveItem, "source_id" | "status" | "include">[]).filter((i) => i.source_id === s.id);
-                const inLib = mine.filter((i) => i.status === "imported").length;
-                const waiting = mine.filter((i) => i.include && (i.status === "new" || i.status === "changed")).length;
+                const { total, inLib, waiting } = countOf.get(s.id) ?? { total: 0, inLib: 0, waiting: 0 };
                 return (
                   <Link key={s.id} href={`/library/drive/${s.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-surface-2">
                     <FolderOpen size={20} className="shrink-0 text-brand" />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate font-medium">{s.name}</span>
                       <span className="block text-xs text-muted">
-                        {mine.length} files · {inLib} in your Library{waiting ? ` · ${waiting} to bring in` : ""}
+                        {total.toLocaleString()} files · {inLib} in your Library{waiting ? ` · ${waiting} to bring in` : ""}
                         {s.last_checked_at ? ` · checked ${formatDate(s.last_checked_at.slice(0, 10), { day: "numeric", month: "short" })}` : ""}
                       </span>
                     </span>
