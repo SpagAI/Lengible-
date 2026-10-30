@@ -6,7 +6,7 @@ import type { DriveSource } from "@/lib/supabase/types";
 // Google can be slow listing big folder trees.
 export const maxDuration = 300;
 
-// Looks at your Drive links again (each at most every few hours, or now with ?force=1) and returns
+// Looks at your Drive links again (each at most once an hour, or now with ?force=1) and returns
 // the files to bring in: new ones (for links set to bring them in by themselves) and changed ones.
 export async function GET(req: NextRequest) {
   const supabase = await createClient();
@@ -16,7 +16,7 @@ export async function GET(req: NextRequest) {
   const { data: sources, error } = await supabase.from("drive_sources").select("*");
   if (error || !sources?.length || !driveKey()) return NextResponse.json({ items: [], checked: 0 });
 
-  const due = (sources as DriveSource[]).filter((s) => force || !s.last_checked_at || Date.now() - new Date(s.last_checked_at).getTime() > 6 * 3600_000);
+  const due = (sources as DriveSource[]).filter((s) => force || !s.last_checked_at || Date.now() - new Date(s.last_checked_at).getTime() > 3600_000);
   const summary = { checked: 0, added: 0, changed: 0, removed: 0, problems: [] as string[] };
   for (const s of due) {
     try {

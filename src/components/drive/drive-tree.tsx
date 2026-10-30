@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Download, FileText, Folder, Loader2, Play, RefreshCw, Sparkles } from "lucide-react";
@@ -8,6 +8,7 @@ import type { DriveItem } from "@/lib/supabase/types";
 import { checkDriveLink, setAutoImport, setFolderCourse, setFolderInclude, updateDriveItem } from "@/app/(app)/library/drive/actions";
 import { useBackgroundWork } from "@/components/background-work";
 import { docTypes, formatBytes } from "@/lib/library";
+import { whenLabel } from "@/lib/dates";
 import { Button, Card, cx, inputClass } from "@/components/ui";
 
 type Course = { id: string; name: string };
@@ -26,12 +27,16 @@ export function DriveTree({
   courses,
   autoImport,
   fileStatus,
+  linkedAt,
+  lastChecked,
 }: {
   sourceId: string;
   items: DriveItem[];
   courses: Course[];
   autoImport: boolean;
   fileStatus: Record<string, string>;
+  linkedAt: string;
+  lastChecked: string | null;
 }) {
   const router = useRouter();
   const { addDriveImports, addProcessJobs, jobs } = useBackgroundWork();
@@ -53,6 +58,34 @@ export function DriveTree({
   const [checking, startCheck] = useTransition();
   const [note, setNote] = useState<{ ok: boolean; text: string }>();
   const [auto, setAuto] = useState(autoImport);
+  // Looks at Drive again: new files and newer versions show up, and what you picked comes in by itself.
+  const check = (quiet: boolean) =>
+    startCheck(async () => {
+      const r = await checkDriveLink(sourceId);
+      if (!quiet || r.error || !/No changes/.test(r.message ?? "")) setNote(r.error ? { ok: false, text: r.error } : { ok: true, text: r.message! });
+      if (!r.error && auto) {
+        try {
+          const c = await (await fetch("/api/drive/check", { cache: "no-store" })).json();
+          if (c.items?.length) addDriveImports(c.items);
+        } catch {}
+      }
+      router.refresh();
+    });
+  // Opening the page checks Drive by itself when the last look was over 15 minutes ago.
+  const checkedOnOpen = useRef(false);
+  useEffect(() => {
+    if (checkedOnOpen.current) return;
+    checkedOnOpen.current = true;
+    if (!lastChecked || Date.now() - new Date(lastChecked).getTime() > 15 * 60_000) check(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Files that appeared in Drive after you added the link (in the last two weeks).
+  const [openedAt] = useState(() => Date.now());
+  const firstSeen = new Date(linkedAt).getTime() + 10 * 60_000;
+  const isNewInDrive = (i: DriveItem) => new Date(i.created_at).getTime() > Math.max(firstSeen, openedAt - 14 * 86_400_000);
+  // Latest change in Drive inside a folder (subfolders included).
+  const lastChange = (path: string) =>
+    items.reduce<string | null>((m, i) => ((i.path === path || i.path.startsWith(`${path}/`)) && i.modified_time && (!m || i.modified_time > m) ? i.modified_time : m), null);
 
   const patch = (id: string, p: Partial<DriveItem>) => {
     setItems((cur) => cur.map((i) => (i.id === id ? { ...i, ...p } : i)));
@@ -154,27 +187,23 @@ export function DriveTree({
           <Button variant="secondary" disabled={!toBring.length} onClick={() => bring(true)}>
             <Play size={16} /> Bring in &amp; process{toBring.length ? ` (${toBring.length})` : ""}
           </Button>
-          <Button
-            variant="secondary"
-            disabled={checking}
-            onClick={() =>
-              startCheck(async () => {
-                const r = await checkDriveLink(sourceId);
-                setNote(r.error ? { ok: false, text: r.error } : { ok: true, text: r.message! });
-                // Updates to what you picked come in straight away.
-                if (!r.error && auto) {
-                  try {
-                    const c = await (await fetch("/api/drive/check", { cache: "no-store" })).json();
-                    if (c.items?.length) addDriveImports(c.items);
-                  } catch {}
-                }
-                router.refresh();
-              })
-            }
-          >
+          <Button variant="secondary" disabled={checking} onClick={() => check(false)}>
             {checking ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />} Check for changes
           </Button>
         </div>
+        <p className="text-xs text-muted">
+          {checking ? "Checking Google Drive for changes…" : lastChecked ? `Last checked ${whenLabel(lastChecked)}.` : "Not checked yet."}
+          {(() => {
+            const latest = lastChange("");
+            const fresh = items.filter((i) => isNewInDrive(i) && i.status !== "removed").length;
+            return (
+              <>
+                {latest ? ` Last change in Drive ${whenLabel(latest)}.` : ""}
+                {fresh ? <b className="text-brand"> {fresh} new in Drive since you added the link.</b> : ""}
+              </>
+            );
+          })()}
+        </p>
         {!toBring.length && nothingYet && <p className="text-xs text-muted">Tick something below to bring it in.</p>}
         {storedIn("").length > 0 && (
           <Button variant="secondary" onClick={() => processThese(storedIn(""))}>
@@ -194,7 +223,7 @@ export function DriveTree({
           <span>
             Keep what I picked up to date
             <span className="block text-xs text-muted">
-              Lengible checks this link when you open it (every few hours). Newer versions of files you brought in replace the old ones (processed
+              Lengible checks this link when you open Lengible and every hour while it&apos;s open (and when you open this page). Newer versions of files you brought in replace the old ones (processed
               again if you had processed them), and new files in folders you ticked whole come in by themselves. Changed timetables and topic
               lists wait for you to review what changed.
             </span>
@@ -297,7 +326,11 @@ export function DriveTree({
                       {path.split("/").at(-1)}
                       <span className="ml-1.5 text-xs font-normal text-muted">
                         {tickState(path).on}/{tickState(path).total}
+                        {lastChange(path) ? ` · changed ${whenLabel(lastChange(path)!)}` : ""}
                       </span>
+                      {shown.some((i) => (i.path === path || i.path.startsWith(`${path}/`)) && isNewInDrive(i) && i.status !== "removed") && (
+                        <span className="ml-1.5 rounded-full bg-brand-soft px-1.5 text-xs font-medium text-brand-strong">New files</span>
+                      )}
                     </button>
                     {storedIn(path).length > 0 && (
                       <button
@@ -365,7 +398,9 @@ export function DriveTree({
                             {i.status === "imported" ? "Processed" : statusChip[i.status].label}
                           </span>
                         )}
+                        {isNewInDrive(i) && i.status !== "removed" && <span className="rounded-full bg-brand px-1.5 font-medium text-on-brand">New in Drive</span>}
                         {i.size_bytes ? formatBytes(i.size_bytes) : null}
+                        {i.modified_time && <span>· modified {whenLabel(i.modified_time)}</span>}
                         {i.error && <span className={i.status === "error" ? "text-danger" : ""}>{i.error}</span>}
                       </span>
                     </span>

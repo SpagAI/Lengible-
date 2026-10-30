@@ -24,6 +24,17 @@ export function formatDate(isoDate: string, opts: Intl.DateTimeFormatOptions = {
   return new Date(toUTC(isoDate)).toLocaleDateString("en-GB", { ...opts, timeZone: "UTC" });
 }
 
+// When something happened, in plain words: "today 14:05", "yesterday 09:30", "3 days ago", or "28 Oct 2026".
+export function whenLabel(timestamp: string, now = new Date()) {
+  const at = new Date(timestamp);
+  const days = -daysUntil(todayISO(at), now);
+  const time = at.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: TIME_ZONE });
+  if (days <= 0) return `today ${time}`;
+  if (days === 1) return `yesterday ${time}`;
+  if (days < 7) return `${days} days ago`;
+  return formatDate(todayISO(at), { day: "numeric", month: "short", year: "numeric" });
+}
+
 export function countdownLabel(days: number) {
   if (days === 0) return "Today";
   if (days === 1) return "Tomorrow";

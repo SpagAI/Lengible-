@@ -57,6 +57,8 @@ export default async function DriveSourcePage({ params, searchParams }: PageProp
         items={items}
         courses={leafCourses(courses).map((c) => ({ id: c.id, name: c.name }))}
         autoImport={source.auto_import}
+        linkedAt={source.created_at}
+        lastChecked={source.last_checked_at}
         fileStatus={fileStatus}
       />
       <form action={removeDriveLink} className="mt-6">

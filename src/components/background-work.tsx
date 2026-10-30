@@ -240,7 +240,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
     [pump],
   );
 
-  // Your Drive links are checked when Lengible opens (each at most every 6 hours): new files
+  // Your Drive links are checked when Lengible opens and then every hour while it's open: new files
   // and newer versions are brought in by themselves.
   useEffect(() => {
     let stop = false;
@@ -251,7 +251,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
           const r = await (await fetch("/api/drive/check", { cache: "no-store" })).json();
           if (!stop && r.items?.length) addDriveImports(r.items);
         } catch {}
-        await sleep(6 * 3600_000);
+        await sleep(3600_000);
       }
     })();
     return () => {
