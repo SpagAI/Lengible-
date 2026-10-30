@@ -83,9 +83,21 @@ export function DriveTree({
   const [openedAt] = useState(() => Date.now());
   const firstSeen = new Date(linkedAt).getTime() + 10 * 60_000;
   const isNewInDrive = (i: DriveItem) => new Date(i.created_at).getTime() > Math.max(firstSeen, openedAt - 14 * 86_400_000);
-  // Latest change in Drive inside a folder (subfolders included).
-  const lastChange = (path: string) =>
-    items.reduce<string | null>((m, i) => ((i.path === path || i.path.startsWith(`${path}/`)) && i.modified_time && (!m || i.modified_time > m) ? i.modified_time : m), null);
+  // Latest change in Drive inside each folder (subfolders included; "" = the whole link), worked out once.
+  const latestIn = new Map<string, string>();
+  for (const i of items) {
+    if (!i.modified_time) continue;
+    const parts = i.path.split("/").filter(Boolean);
+    for (let k = 0; k <= parts.length; k++) {
+      const p = parts.slice(0, k).join("/");
+      const cur = latestIn.get(p);
+      if (!cur || i.modified_time > cur) latestIn.set(p, i.modified_time);
+    }
+  }
+  const lastChange = (path: string) => latestIn.get(path) ?? null;
+  // Newest first (like Drive's "Last modified"), or A–Z.
+  const [sortBy, setSortBy] = useState<"date" | "name">("date");
+  const byDate = (a: string | null, b: string | null) => (b ?? "").localeCompare(a ?? "");
 
   const patch = (id: string, p: Partial<DriveItem>) => {
     setItems((cur) => cur.map((i) => (i.id === id ? { ...i, ...p } : i)));
@@ -145,8 +157,27 @@ export function DriveTree({
       const parts = i.path.split("/").filter(Boolean);
       for (let k = 1; k <= parts.length; k++) paths.add(parts.slice(0, k).join("/"));
     }
-    return [...paths].sort((a, b) => a.localeCompare(b));
+    // Folders under their parent, each level sorted on its own.
+    const kids = new Map<string, string[]>();
+    for (const p of paths) {
+      if (!p) continue;
+      const parent = p.split("/").slice(0, -1).join("/");
+      kids.set(parent, [...(kids.get(parent) ?? []), p]);
+    }
+    const order: string[] = [];
+    const visit = (p: string) => {
+      order.push(p);
+      const list = kids.get(p) ?? [];
+      list.sort((a, b) => (sortBy === "date" ? byDate(lastChange(a), lastChange(b)) : 0) || a.localeCompare(b));
+      list.forEach(visit);
+    };
+    visit("");
+    return order;
   })();
+  const filesIn = (path: string) =>
+    shown
+      .filter((i) => i.path === path)
+      .sort((a, b) => (sortBy === "date" ? byDate(a.modified_time, b.modified_time) : 0) || a.name.localeCompare(b.name));
   const courseOfFolder = (path: string) => {
     const inside = items.filter((i) => i.path === path || i.path.startsWith(`${path}/`));
     const ids = new Set(inside.map((i) => i.course_id ?? ""));
@@ -271,6 +302,18 @@ export function DriveTree({
                 <button type="button" onClick={() => tickFolder("")} className="text-xs text-brand underline">
                   {t.state === "all" ? "Select none" : "Select all"}
                 </button>
+                <label className="flex items-center gap-1 text-xs text-muted">
+                  Sort
+                  <select
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value as "date" | "name")}
+                    className={cx(inputClass, "min-h-7 w-auto py-0 text-xs")}
+                    aria-label="Sort folders and files"
+                  >
+                    <option value="date">Newest first</option>
+                    <option value="name">Name A–Z</option>
+                  </select>
+                </label>
                 <button
                   type="button"
                   onClick={() => setOpened(opened.size ? new Set() : new Set(folders.filter(Boolean)))}
@@ -283,7 +326,7 @@ export function DriveTree({
           })()}
           {folders.map((path) => {
             if (path && hidden(path.split("/").slice(0, -1).join("/"))) return null;
-            const files = hidden(path) ? [] : shown.filter((i) => i.path === path);
+            const files = hidden(path) ? [] : filesIn(path);
             const depth = path ? path.split("/").length : 0;
             const c = courseOfFolder(path);
             return (
