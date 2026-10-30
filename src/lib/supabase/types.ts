@@ -217,7 +217,11 @@ export type QuizSettings = {
   scope?: string;
   // Notes shown on the quiz (e.g. "No picture cards yet").
   notes?: string[];
+  // Only these files (optionally a page/slide range of each) and folders (with their subfolders).
+  materials?: QuizMaterials;
 };
+
+export type QuizMaterials = { label: string; files: { id: string; from?: number; to?: number }[]; folder_ids: string[] };
 
 export type QuizSession = {
   id: string;

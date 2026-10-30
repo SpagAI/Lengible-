@@ -10,6 +10,7 @@ import { BUILT_PHASE, courseModules } from "@/modules/registry";
 import { PageHeader, Card, ButtonLink, colorFor, cx } from "@/components/ui";
 import { CourseCard } from "@/components/course-card";
 import { ExamList } from "@/components/exam-list";
+import { AskPanel } from "@/components/ask/ask-panel";
 import type { Topic, TopicFile } from "@/lib/supabase/types";
 
 export async function generateMetadata({ params }: PageProps<"/courses/[id]">): Promise<Metadata> {
@@ -62,6 +63,36 @@ export default async function CoursePage({ params }: PageProps<"/courses/[id]">)
   const { data: linkFiles } = linkFileIds.length ? await supabase.from("files").select("id, name").in("id", linkFileIds) : { data: [] };
   const fileName = new Map((linkFiles ?? []).map((f) => [f.id, f.name]));
   const linksOf = (topicId: string) => links.filter((l) => l.topic_id === topicId);
+
+  // Materials: this course's Library folders (with how much is processed) and the newest files.
+  type MatFile = { id: string; name: string; folder_id: string | null; status: string; created_at: string; page_count: number | null };
+  const matFiles: MatFile[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data } = await supabase.from("files").select("id, name, folder_id, status, created_at, page_count").in("course_id", ids).order("created_at", { ascending: false }).range(from, from + 999);
+    matFiles.push(...((data ?? []) as MatFile[]));
+    if (!data || data.length < 1000) break;
+  }
+  const { data: matFolders } = await supabase.from("folders").select("id, name, parent_id, course_id").in("course_id", ids).order("name");
+  const topFolders = (matFolders ?? []).filter((f) => !f.parent_id);
+  const subtreeOf = (rootId: string) => {
+    const inside = new Set([rootId]);
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const f of matFolders ?? []) {
+        if (f.parent_id && inside.has(f.parent_id) && !inside.has(f.id)) {
+          inside.add(f.id);
+          grew = true;
+        }
+      }
+    }
+    return inside;
+  };
+  const folderStats = topFolders.map((f) => {
+    const inside = subtreeOf(f.id);
+    const list = matFiles.filter((x) => x.folder_id && inside.has(x.folder_id));
+    return { ...f, total: list.length, read: list.filter((x) => x.status === "extracted" || x.status === "analysed").length };
+  });
+  const recentFiles = matFiles.slice(0, 6);
 
   const exams = [...course.course_exams, ...children.flatMap((c) => c.course_exams)];
   const exam = nextExam(exams);
@@ -123,6 +154,63 @@ export default async function CoursePage({ params }: PageProps<"/courses/[id]">)
           ),
         )}
       </section>
+
+      {matFiles.length > 0 && (
+        <section className="mt-4 grid gap-3 lg:grid-cols-2">
+          <Card className="space-y-3">
+            <div className="flex items-center gap-2">
+              <h2 className="font-semibold">Materials</h2>
+              <span className="text-xs text-muted">
+                {matFiles.filter((x) => x.status === "extracted" || x.status === "analysed").length} of {matFiles.length} processed
+              </span>
+              <Link href={`/library/course/${course.id}`} className="ml-auto text-xs font-medium text-brand">
+                All in Library →
+              </Link>
+            </div>
+            {folderStats.length > 0 && (
+              <ul className="divide-y divide-border rounded-xl border border-border text-sm">
+                {folderStats.map((f) => (
+                  <li key={f.id}>
+                    <Link href={`/library/course/${f.course_id}?folder=${f.id}`} className="flex items-center gap-2 px-3 py-2 hover:bg-surface-2">
+                      <FolderOpen size={16} className="shrink-0 text-brand" />
+                      <span className="min-w-0 flex-1 truncate">{f.name}</span>
+                      <span className="shrink-0 text-xs text-muted">
+                        {f.total} file{f.total === 1 ? "" : "s"}
+                        {f.total ? ` · ${f.read === f.total ? "all processed" : `${f.read} processed`}` : ""}
+                      </span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div>
+              <p className="mb-1 text-xs font-semibold tracking-wide text-muted uppercase">Recently added</p>
+              <ul className="space-y-1 text-sm">
+                {recentFiles.map((f) => {
+                  const read = f.status === "extracted" || f.status === "analysed";
+                  return (
+                    <li key={f.id} className="flex items-center gap-2">
+                      <FileText size={15} className="shrink-0 text-muted" />
+                      <Link href={`/library/file/${f.id}`} className="min-w-0 flex-1 truncate hover:text-brand">
+                        {f.name}
+                      </Link>
+                      {read ? (
+                        <Link href={`/library/file/${f.id}`} className="shrink-0 text-xs font-medium text-brand">
+                          Read
+                        </Link>
+                      ) : (
+                        <span className="shrink-0 rounded-full bg-surface-2 px-1.5 text-[11px] text-muted">Not processed</span>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+            <p className="text-xs text-muted">Open a folder or file to quiz on exactly it, or ask the AI (e.g. “quiz me on the anticoagulant slides”).</p>
+          </Card>
+          <AskPanel scope={{ courseId: course.id }} scopeLabel={course.name} compact />
+        </section>
+      )}
 
       {children.length > 0 && (
         <section className="mt-6">

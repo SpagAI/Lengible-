@@ -79,8 +79,9 @@ export async function createQuizSession(supabase: DB, input: QuizSettings, mode:
     plan.picture = pics.length;
   }
 
-  // Reuse questions already in your bank that match and that you haven't answered in the last 3 weeks.
-  for (const f of settings.formats.filter((x) => x !== "picture")) {
+  // Reuse questions already in your bank that match and that you haven't answered in the last 3 weeks
+  // (not for a quiz on chosen files or slides: those are always written fresh from them).
+  for (const f of settings.materials ? [] : settings.formats.filter((x) => x !== "picture")) {
     const reused = await fromBank(supabase, settings, f, plan[f] ?? 0, ids);
     ids.push(...reused);
   }
@@ -88,7 +89,9 @@ export async function createQuizSession(supabase: DB, input: QuizSettings, mode:
   const title =
     mode === "past"
       ? "Past-question style"
-      : `${settings.formats.map(formatLabel).join(", ")} · ${settings.difficulty[0].toUpperCase()}${settings.difficulty.slice(1)}`;
+      : settings.materials
+        ? `Quiz: ${settings.materials.label}`.slice(0, 120)
+        : `${settings.formats.map(formatLabel).join(", ")} · ${settings.difficulty[0].toUpperCase()}${settings.difficulty.slice(1)}`;
   const timeLimit = settings.timed ? Object.entries(plan).reduce((t, [f, n]) => t + (FORMATS.find((x) => x.value === f)?.seconds ?? 60) * (n ?? 0), 0) : null;
   const { data, error } = await supabase
     .from("quiz_sessions")
@@ -259,6 +262,9 @@ export async function generateStep(supabase: DB, sessionId: string): Promise<Ste
       weight.set(t.id, 1 + (w.length ? text.filter((c) => w.every((x) => c.includes(x))).length * 3 : 0));
     }
   }
+  // A quiz on chosen files, slides or folders: excerpts come only from them.
+  if (s.materials) return generateFromMaterials(supabase, sessionId, session, s, batch, need, want, leaf, topics);
+
   const sampled = topics
     .map((t) => ({ t, key: Math.random() ** (1 / (weight.get(t.id) ?? 1)) }))
     .sort((a, b) => b.key - a.key)
@@ -321,6 +327,26 @@ export async function generateStep(supabase: DB, sessionId: string): Promise<Ste
     };
   });
 
+  return writeQuestions(supabase, sessionId, s, batch, need, want, leaf, topics, sampled, excerpts);
+}
+
+type Leaf = { id: string; name: string; is_group: boolean };
+type TopicRow = { id: string; name: string; course_id: string };
+type Excerpt = { chunk_id: string; file_id: string; page: number; course_id: string | null; fileName: string; kind: "mb" | "past" | "material"; content: string };
+
+// Asks the AI for this batch of questions from the excerpts, checks them and adds them to the quiz.
+async function writeQuestions(
+  supabase: DB,
+  sessionId: string,
+  s: QuizSettings,
+  batch: Partial<Record<QuestionFormat, number>>,
+  need: Partial<Record<QuestionFormat, number>>,
+  want: number,
+  leaf: Leaf[],
+  topics: TopicRow[],
+  sampled: TopicRow[],
+  excerpts: Excerpt[],
+): Promise<StepResult> {
   const courseName = (id: string | null) => leaf.find((c) => c.id === id)?.name ?? "";
   const askFor = (Object.entries(batch) as [Exclude<QuestionFormat, "picture">, number][]).map(([f, n]) => `${n} × ${f}`).join(", ");
   const sourceRule =
@@ -409,6 +435,97 @@ export async function generateStep(supabase: DB, sessionId: string): Promise<Ste
   await supabase.from("quiz_sessions").update({ question_ids: ids }).eq("id", sessionId);
   const stillNeeded = Object.values(need).reduce((a, b) => a + (b ?? 0), 0) - rows.length;
   return { status: stillNeeded > 0 ? "more" : "done", have: ids.length, want };
+}
+
+// Excerpts from the chosen files (page ranges) and folders, a fresh random handful each batch.
+async function generateFromMaterials(
+  supabase: DB,
+  sessionId: string,
+  session: QuizSession,
+  s: QuizSettings,
+  batch: Partial<Record<QuestionFormat, number>>,
+  need: Partial<Record<QuestionFormat, number>>,
+  want: number,
+  leaf: Leaf[],
+  topics: TopicRow[],
+): Promise<StepResult> {
+  const m = s.materials!;
+  // Files inside the chosen folders (subfolders included).
+  const folderIds = new Set(m.folder_ids);
+  if (folderIds.size) {
+    const { data: folders } = await supabase.from("folders").select("id, parent_id");
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const f of folders ?? []) {
+        if (f.parent_id && folderIds.has(f.parent_id) && !folderIds.has(f.id)) {
+          folderIds.add(f.id);
+          grew = true;
+        }
+      }
+    }
+  }
+  const ranges = new Map(m.files.map((f) => [f.id, f]));
+  if (folderIds.size) {
+    const ids = [...folderIds];
+    for (let k = 0; k < ids.length; k += 100) {
+      const { data } = await supabase.from("files").select("id").in("folder_id", ids.slice(k, k + 100));
+      for (const f of data ?? []) if (!ranges.has(f.id)) ranges.set(f.id, { id: f.id });
+    }
+  }
+  const fileIds = [...ranges.keys()];
+  const { data: info } = fileIds.length ? await supabase.from("files").select("id, name, doc_type").in("id", fileIds.slice(0, 300)) : { data: [] };
+  const usable = (info ?? []).filter((f) => !["timetable", "topic_list"].includes(f.doc_type));
+  // Pages already used by this quiz's questions come up less, so a long quiz covers more of the slides.
+  const { data: used } = session.question_ids.length
+    ? await supabase.from("questions").select("source_file_id, source_page").in("id", session.question_ids)
+    : { data: [] as { source_file_id: string | null; source_page: number | null }[] };
+  const usedKey = new Set((used ?? []).map((u) => `${u.source_file_id}:${u.source_page}`));
+  const pool: { id: string; file_id: string; page: number; course_id: string | null }[] = [];
+  for (const f of shuffle(usable).slice(0, 40)) {
+    const r = ranges.get(f.id)!;
+    let q = supabase.from("chunks").select("id, file_id, page, course_id").eq("file_id", f.id);
+    if (r.from) q = q.gte("page", r.from);
+    if (r.to) q = q.lte("page", r.to);
+    const { data } = await q.limit(400);
+    pool.push(...(data ?? []));
+  }
+  if (!pool.length) {
+    return {
+      status: "error",
+      message: "Nothing to quiz on yet: these files haven't been processed (read) or have no text on those pages. Process them first, then try again.",
+    };
+  }
+  const fresh = shuffle(pool.filter((c) => !usedKey.has(`${c.file_id}:${c.page}`)));
+  const picked = [...fresh, ...shuffle(pool.filter((c) => usedKey.has(`${c.file_id}:${c.page}`)))].slice(0, 6);
+  const { data: contents } = await supabase.from("chunks").select("id, content").in("id", picked.map((p) => p.id));
+  const names = new Map(usable.map((f) => [f.id, f]));
+  const excerpts: Excerpt[] = picked
+    .sort((a, b) => a.file_id.localeCompare(b.file_id) || a.page - b.page)
+    .map((p) => {
+      const f = names.get(p.file_id);
+      return {
+        chunk_id: p.id,
+        file_id: p.file_id,
+        page: p.page,
+        course_id: p.course_id,
+        fileName: f?.name ?? "Your material",
+        kind: f?.doc_type === "mb_questions" ? "mb" : f?.doc_type === "past_questions" ? "past" : "material",
+        content: (contents ?? []).find((c) => c.id === p.id)?.content.slice(0, 2200) ?? "",
+      };
+    });
+  const courses = new Set(excerpts.map((e) => e.course_id));
+  return writeQuestions(
+    supabase,
+    sessionId,
+    s,
+    batch,
+    need,
+    want,
+    leaf.filter((c) => courses.has(c.id)).length ? leaf.filter((c) => courses.has(c.id)) : leaf,
+    topics.filter((t) => courses.has(t.course_id)),
+    [],
+    excerpts,
+  );
 }
 
 // ——— Marking ———

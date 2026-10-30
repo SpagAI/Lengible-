@@ -87,6 +87,17 @@ public/sw.js          service worker (install + offline)
 6. Course intelligence
 7. Pathology picture tests and on-request diagrams
 
+## Ask AI and quizzes from your slides
+
+**Ask AI** (sidebar, and on every course, Library folder and file page) answers questions from your processed files. The AI first
+plans the search from your question and how your files are grouped (course / folder / file names): search words with synonyms and
+drug or disease names, the files that fit, and any slides you name ("slides 10–20 of the anaemia lecture"). Lengible then searches
+the text and ranks the pages, and the AI answers from the best ones with numbered sources that open the exact slide. "Which slides
+cover…" lists where something is; "quiz me on…" builds a quiz written only from those slides. Files stored but not processed aren't
+searched. Each question uses two AI calls.
+
+**Quiz me on this file / folder**: on a file page (optionally slides from–to) or a Library folder; questions come only from that material.
+
 ## Google Drive links (optional)
 
 Library → Google Drive links lists everything in a folder shared "Anyone with the link" (e.g. your class folder). Nothing is taken until

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ChevronRight, Layers, Trash2 } from "lucide-react";
+import { ChevronRight, ExternalLink, Layers, Trash2 } from "lucide-react";
 import { requireUser } from "@/lib/supabase/server";
 import { getCourses } from "@/lib/courses";
 import { courseParam, docTypeLabel, docTypes, formatBytes, importableTypes } from "@/lib/library";
@@ -14,6 +14,8 @@ import { ConfirmButton } from "@/components/confirm-button";
 import { MaterialCardsButton } from "@/components/flashcards/deck-buttons";
 import { ProcessDetails } from "@/components/process-details";
 import { ProcessFileButton } from "@/components/library/process-bar";
+import { MaterialQuiz } from "@/components/quiz/material-quiz";
+import { AskPanel } from "@/components/ask/ask-panel";
 import type { Concept, LibraryFile } from "@/lib/supabase/types";
 
 export async function generateMetadata({ params }: PageProps<"/library/file/[id]">): Promise<Metadata> {
@@ -48,6 +50,9 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
     supabase.from("decks").select("id").eq("file_id", id).maybeSingle(),
     supabase.from("topic_files").select("topic_id, start_page, end_page, subtopics, key_points").eq("file_id", id).order("start_page"),
   ]);
+  // Where it came from in Google Drive, if it was brought in from a Drive link.
+  const { data: driveItem } = await supabase.from("drive_items").select("drive_id, resource_key").eq("file_id", id).limit(1).maybeSingle();
+  const driveUrl = driveItem ? `https://drive.google.com/open?id=${driveItem.drive_id}${driveItem.resource_key ? `&resourcekey=${driveItem.resource_key}` : ""}` : null;
   const topicName = new Map((topics ?? []).map((t) => [t.id, t.name]));
   const reading = file.analysis as { kind?: string; cursor?: number; totalPages?: number; finished?: boolean; skipped?: boolean; v?: number } | null;
   const inProgress = reading?.kind === "concepts" && !reading.finished && !reading.skipped && (reading.cursor ?? 0) > 0;
@@ -117,6 +122,17 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
           )}
           {/* Same slot either way, so the result message survives the refresh that creates the deck. */}
           <MaterialCardsButton fileId={id} label={deck ? "Make more cards" : "Make flashcards from this file"} />
+          <MaterialQuiz label={file.name} fileId={id} pages={file.page_count ?? undefined} startPage={sp.page ? startPage : undefined} buttonLabel="Quiz me on this file" />
+        </div>
+      )}
+      {driveUrl && (
+        <a href={driveUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1 text-sm text-brand">
+          Open in Google Drive <ExternalLink size={13} />
+        </a>
+      )}
+      {(file.status === "extracted" || file.status === "analysed") && (
+        <div className="mt-4">
+          <AskPanel scope={{ fileId: id }} scopeLabel={file.name} compact />
         </div>
       )}
 

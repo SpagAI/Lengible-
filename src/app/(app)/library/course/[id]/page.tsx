@@ -10,6 +10,8 @@ import { FileRow } from "@/components/library/file-row";
 import { ProcessBar } from "@/components/library/process-bar";
 import { SearchBox } from "@/components/library/search-box";
 import { LibraryToolbar } from "@/components/library/toolbar";
+import { AskPanel } from "@/components/ask/ask-panel";
+import { MaterialQuiz } from "@/components/quiz/material-quiz";
 import type { Folder, LibraryFile } from "@/lib/supabase/types";
 
 export const metadata: Metadata = { title: "Library" };
@@ -97,9 +99,26 @@ export default async function CourseLibraryPage({ params, searchParams }: PagePr
         folder={current ? { id: current.id, name: current.name } : null}
         topics={topics ?? []}
       />
-      <div className="mt-4">
-        <SearchBox course={courseId ?? undefined} />
-      </div>
+      {current && (
+        <div className="mt-3">
+          <MaterialQuiz label={current.name} folderId={current.id} buttonLabel="Quiz me on this folder" />
+        </div>
+      )}
+      {current || courseId ? (
+        <div className="mt-4">
+          <AskPanel scope={current ? { folderId: current.id } : { courseId }} scopeLabel={current ? path.map((f) => f.name).join(" / ") : title} compact />
+          <details className="mt-2 text-sm">
+            <summary className="cursor-pointer text-xs text-muted">Exact word search instead</summary>
+            <div className="mt-2">
+              <SearchBox course={courseId ?? undefined} />
+            </div>
+          </details>
+        </div>
+      ) : (
+        <div className="mt-4">
+          <SearchBox course={courseId ?? undefined} />
+        </div>
+      )}
 
       {!folderId && children.length > 0 && (
         <Card className="mt-4 divide-y divide-border p-0">
