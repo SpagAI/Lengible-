@@ -7,9 +7,11 @@ import { finishExtraction, markFailed } from "@/app/(app)/library/actions";
 import { postJSON } from "@/lib/fetch-json";
 
 export type Stage = "waiting" | "uploading" | "reading" | "analysing" | "done" | "review" | "no_text" | "paused" | "error";
-export type Progress = { stage: Stage; message?: string };
+// step/done/total give the detailed timeline: which part of the work is running and how far it is.
+export type Step = "upload" | "text" | "pictures" | "ai" | "save";
+export type Progress = { stage: Stage; message?: string; step?: Step; done?: number; total?: number };
 
-export type AnalyzeResult = { status: "done" | "more" | "review" | "rate_limited" | "skipped" | "error" | "busy"; message?: string };
+export type AnalyzeResult = { status: "done" | "more" | "review" | "rate_limited" | "skipped" | "error" | "busy"; message?: string; cursor?: number; total?: number };
 
 // At most this many picture pages are read per file in one go (about 150 AI calls).
 export const MAX_PICTURE_PAGES = 600;
@@ -53,7 +55,7 @@ export async function analyze(fileId: string, onProgress: (p: Progress) => void,
   for (let step = 0; step < 300; step++) {
     const body = await postJSON<AnalyzeResult>(`/api/files/${fileId}/analyze${full ? "?full=1" : ""}`);
     if (body.status !== "more") return body;
-    onProgress({ stage: "analysing", message: body.message });
+    onProgress({ stage: "analysing", step: "ai", message: body.message, done: body.cursor, total: body.total });
   }
   return { status: "error", message: "Stopped after too many steps." };
 }
@@ -67,28 +69,29 @@ export async function runPipeline(
   onProgress: (p: Progress) => void,
 ) {
   try {
-    onProgress({ stage: "uploading" });
+    onProgress({ stage: "uploading", step: "upload" });
     const { error: upErr } = await supabase.storage.from("library").upload(record.path, file, { contentType: file.type || undefined, upsert: true });
     if (upErr) throw new Error(upErr.message.includes("exceeded") ? "File is bigger than the 50 MB limit." : `Upload failed: ${upErr.message}`);
 
-    onProgress({ stage: "reading" });
+    onProgress({ stage: "reading", step: "text" });
     const { pages, pageCount, hasText: textLayer, pictureOnly } = await extractText(file, file.name);
     for (let i = 0; i < pages.length; i += 50) {
       const rows = pages.slice(i, i + 50).map((p) => ({ file_id: record.id, course_id: courseId, page: p.page, content: p.text.slice(0, 20000) }));
       const { error } = await supabase.from("chunks").insert(rows);
       if (error) throw new Error(`Couldn't save the text: ${error.message}`);
-      onProgress({ stage: "reading", message: `${Math.min(i + 50, pages.length)} of ${pages.length} pages saved` });
+      onProgress({ stage: "reading", step: "text", message: `${Math.min(i + 50, pages.length)} of ${pages.length} pages saved`, done: Math.min(i + 50, pages.length), total: pages.length });
     }
     // Slides that are mostly a picture (and scanned PDFs): the AI reads the page images.
     let hasText = textLayer;
     if (fileKind(file.name, file.type) === "pdf" && pictureOnly?.length) {
-      onProgress({ stage: "reading", message: `Reading ${Math.min(pictureOnly.length, MAX_PICTURE_PAGES)} picture pages with AI…` });
+      const pictureTotal = Math.min(pictureOnly.length, MAX_PICTURE_PAGES);
+      onProgress({ stage: "reading", step: "pictures", message: `Reading ${pictureTotal} picture pages with AI…`, done: 0, total: pictureTotal });
       const r = await readPicturePages(record.id, await file.arrayBuffer(), pictureOnly, (done, total) =>
-        onProgress({ stage: "reading", message: `Read ${done} of ${total} picture pages` }),
+        onProgress({ stage: "reading", step: "pictures", message: `Read ${done} of ${total} picture pages`, done, total }),
       );
       if (r.done > 0) hasText = true;
       if (r.status !== "done") {
-        onProgress({ stage: "reading", message: `${r.message ?? "Paused."} Open the file later and tap “Read picture pages” to finish them.` });
+        onProgress({ stage: "reading", step: "pictures", message: `${r.message ?? "Paused."} Open the file later and tap “Read picture pages” to finish them.`, done: r.done, total: pictureTotal });
       }
     }
     await finishExtraction(record.id, pageCount, hasText);
@@ -97,7 +100,7 @@ export async function runPipeline(
       return;
     }
 
-    onProgress({ stage: "analysing" });
+    onProgress({ stage: "analysing", step: "ai" });
     const result = await analyze(record.id, onProgress);
     if (result.status === "review") onProgress({ stage: "review", message: result.message });
     else if (result.status === "rate_limited") onProgress({ stage: "paused", message: result.message });

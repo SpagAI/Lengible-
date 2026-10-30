@@ -12,6 +12,7 @@ import { FileActions } from "@/components/library/file-actions";
 import { LinkedText } from "@/components/library/linked-text";
 import { ConfirmButton } from "@/components/confirm-button";
 import { MaterialCardsButton } from "@/components/flashcards/deck-buttons";
+import { ProcessDetails } from "@/components/process-details";
 import type { Concept, LibraryFile } from "@/lib/supabase/types";
 
 export async function generateMetadata({ params }: PageProps<"/library/file/[id]">): Promise<Metadata> {
@@ -112,9 +113,15 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
 
       {file.status === "failed" && <p className="mt-3 rounded-xl bg-danger/10 p-3 text-sm text-danger">Processing failed: {file.error}</p>}
       {inProgress && (
-        <p className="mt-3 rounded-xl bg-brand-soft/60 p-3 text-sm text-brand-strong">
-          Lengible is reading this file in the background: page {reading!.cursor} of {reading!.totalPages}. Keep Lengible open (any page) and it carries on.
-        </p>
+        <details className="mt-3 rounded-2xl border border-brand/30 bg-brand-soft/30 p-4 text-sm" open>
+          <summary className="cursor-pointer font-semibold text-brand-strong">
+            Being read in the background: page {reading!.cursor} of {reading!.totalPages}
+          </summary>
+          <p className="mt-1 mb-3 text-xs text-muted">Keep Lengible open (any page) and it carries on. Live progress:</p>
+          <div className="text-xs">
+            <ProcessDetails fileId={id} />
+          </div>
+        </details>
       )}
       {(outline ?? []).length > 0 && (
         <details className="mt-3 rounded-2xl border border-border bg-surface p-4" open={(outline ?? []).length <= 6}>

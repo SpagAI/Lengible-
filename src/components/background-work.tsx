@@ -1,13 +1,13 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { BookOpenText, ChevronDown, Loader2, Pause, Play, Upload } from "lucide-react";
+import { BookOpenText, ChevronDown, ChevronRight, Loader2, Pause, Play, Upload } from "lucide-react";
 import { useSupabase } from "@/lib/supabase/client";
 import { createFileRecord } from "@/app/(app)/library/actions";
 import { runPipeline, type Progress } from "@/components/library/pipeline";
 import { StageIcon } from "@/components/library/upload-panel";
+import { ProcessDetails } from "@/components/process-details";
 import { postJSON } from "@/lib/fetch-json";
 import { cx } from "@/components/ui";
 
@@ -26,7 +26,7 @@ export type UploadJob = {
   progress: Progress;
 };
 type NewUpload = Omit<UploadJob, "key" | "progress" | "id">;
-type Reading = { id: string; name: string; cursor: number; total: number; left: number; note?: string } | null;
+type Reading = { id: string; name: string; cursor: number; total: number; left: number; note?: string; retryAt?: number } | null;
 
 const Ctx = createContext<{ jobs: UploadJob[]; addUploads: (items: NewUpload[]) => void } | null>(null);
 export const useBackgroundWork = () => useContext(Ctx)!;
@@ -138,6 +138,16 @@ function useReadingQueue() {
   useEffect(() => {
     pausedRef.current = paused;
   }, [paused]);
+  // "Try now" ends the current wait early.
+  const wake = useRef<(() => void) | null>(null);
+  const nap = (ms: number) =>
+    new Promise<void>((r) => {
+      const t = setTimeout(r, ms);
+      wake.current = () => {
+        clearTimeout(t);
+        r();
+      };
+    });
 
   useEffect(() => {
     let stop = false;
@@ -176,8 +186,9 @@ function useReadingQueue() {
           continue;
         }
         // Out of free AI allowance, AI busy, being read elsewhere, or an error: wait, then try again (longer each time).
-        setNow({ ...f, left, note: r.status === "busy" ? "Being read on another device or upload" : r.message });
-        await sleep(r.status === "busy" ? 30_000 : backoff);
+        const wait = r.status === "busy" ? 30_000 : backoff;
+        setNow({ ...f, left, note: r.status === "busy" ? "Being read on another device or upload" : r.message, retryAt: Date.now() + wait });
+        await nap(wait);
         if (r.status !== "busy") backoff = Math.min(backoff * 2, 30 * 60_000);
       }
     })();
@@ -190,7 +201,7 @@ function useReadingQueue() {
     setPausedState(v);
     store.set("lengible:reading-paused", v);
   };
-  return { now, paused, setPaused };
+  return { now, paused, setPaused, retryNow: () => wake.current?.() };
 }
 
 const stageText: Record<Progress["stage"], string> = {
@@ -207,6 +218,8 @@ const stageText: Record<Progress["stage"], string> = {
 
 function Dock({ jobs, reading, onClear }: { jobs: UploadJob[]; reading: ReturnType<typeof useReadingQueue>; onClear: () => void }) {
   const [small, setSmall] = useState(() => store.get("lengible:dock-small"));
+  // Which task's details are open. Unset = the one that's running (or needs attention) opens by itself.
+  const [openKey, setOpenKey] = useState<string | null | undefined>(undefined);
   const minimise = (v: boolean) => {
     setSmall(v);
     store.set("lengible:dock-small", v);
@@ -216,6 +229,10 @@ function Dock({ jobs, reading, onClear }: { jobs: UploadJob[]; reading: ReturnTy
   if (!jobs.length && !r) return null;
   const pct = r?.total ? Math.round((100 * r.cursor) / r.total) : 0;
   const working = active.length > 0 || (!!r && !reading.paused && !r.note);
+  const needsYou = jobs.find((j) => ["error", "paused", "review"].includes(j.progress.stage));
+  const autoKey = active[0]?.key ?? needsYou?.key ?? (r ? "reader" : jobs.at(-1)?.key);
+  const shown = openKey === undefined ? autoKey : openKey;
+  const toggle = (key: string) => setOpenKey(shown === key ? null : key);
   const position = "fixed right-3 bottom-[calc(76px+env(safe-area-inset-bottom,0px))] z-30 md:right-6 md:bottom-6";
 
   if (small) {
@@ -233,7 +250,12 @@ function Dock({ jobs, reading, onClear }: { jobs: UploadJob[]; reading: ReturnTy
           {r && <circle cx="18" cy="18" r="15.5" fill="none" stroke="var(--color-brand)" strokeWidth="3" strokeDasharray={`${(pct / 100) * 97.4} 97.4`} strokeLinecap="round" />}
         </svg>
         {active.length ? <Upload size={16} className="text-brand" /> : <BookOpenText size={16} className="text-brand" />}
-        {working && <span className="absolute top-0.5 right-0.5 size-3 animate-pulse rounded-full bg-brand ring-2 ring-surface" />}
+        {/* Amber dot: something needs you (paused, failed or ready to review); blue dot: working. */}
+        {needsYou || r?.note ? (
+          <span className="absolute top-0.5 right-0.5 size-3 rounded-full bg-warn ring-2 ring-surface" />
+        ) : (
+          working && <span className="absolute top-0.5 right-0.5 size-3 animate-pulse rounded-full bg-brand ring-2 ring-surface" />
+        )}
       </button>
     );
   }
@@ -248,51 +270,77 @@ function Dock({ jobs, reading, onClear }: { jobs: UploadJob[]; reading: ReturnTy
           <ChevronDown size={16} />
         </button>
       </div>
-      <ul className="max-h-60 divide-y divide-border overflow-y-auto">
+      <ul className="max-h-[min(65vh,520px)] divide-y divide-border overflow-y-auto">
         {jobs.map((j) => (
-          <li key={j.key} className="flex items-start gap-2 px-3 py-2">
-            <StageIcon stage={j.progress.stage} />
-            <div className="min-w-0 flex-1">
-              {j.id ? (
-                <Link href={j.progress.stage === "review" ? `/library/file/${j.id}/review` : `/library/file/${j.id}`} className="block truncate font-medium">
-                  {j.file.name}
-                </Link>
-              ) : (
-                <p className="truncate font-medium">{j.file.name}</p>
-              )}
-              <p className={cx("truncate", j.progress.stage === "error" ? "text-danger" : "text-muted")}>
-                {stageText[j.progress.stage]}
-                {j.progress.message ? ` · ${j.progress.message}` : ""}
-              </p>
-            </div>
+          <li key={j.key} className="px-3 py-2">
+            <button type="button" onClick={() => toggle(j.key)} className="flex w-full items-start gap-2 text-left" aria-expanded={shown === j.key}>
+              <StageIcon stage={j.progress.stage} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium">{j.file.name}</span>
+                <span className={cx("block truncate", j.progress.stage === "error" ? "text-danger" : "text-muted")}>
+                  {stageText[j.progress.stage]}
+                  {j.progress.step === "ai" && j.progress.total ? ` · page ${j.progress.done ?? 0} of ${j.progress.total}` : ""}
+                  {j.progress.step === "pictures" && j.progress.total ? ` · picture ${j.progress.done ?? 0} of ${j.progress.total}` : ""}
+                </span>
+              </span>
+              {shown === j.key ? <ChevronDown size={16} className="mt-0.5 shrink-0 text-muted" /> : <ChevronRight size={16} className="mt-0.5 shrink-0 text-muted" />}
+            </button>
+            {shown === j.key && (
+              <div className="mt-2">
+                <ProcessDetails
+                  fileId={j.id}
+                  live={{
+                    step: ACTIVE.includes(j.progress.stage) ? (j.progress.step ?? (j.progress.stage === "uploading" ? "upload" : undefined)) : undefined,
+                    done: j.progress.done,
+                    total: j.progress.total,
+                    note: ["paused", "error"].includes(j.progress.stage) ? j.progress.message : undefined,
+                    failed: j.progress.stage === "error",
+                  }}
+                />
+              </div>
+            )}
           </li>
         ))}
         {r && (
-          <li className="flex items-center gap-2 px-3 py-2">
-            <BookOpenText size={16} className={cx("shrink-0 text-brand", !reading.paused && !r.note && "animate-pulse")} />
-            <Link href={`/library/file/${r.id}`} className="min-w-0 flex-1">
-              <span className="block truncate font-medium">
-                {reading.paused ? "Reading paused" : "Reading"} · {r.name}
-              </span>
-              <span className="block truncate text-muted">
-                {r.note ? r.note : r.total ? `page ${r.cursor} of ${r.total} (${pct}%)` : "starting…"}
-                {r.left > 1 ? ` · ${r.left - 1} more file${r.left > 2 ? "s" : ""} waiting` : ""}
-              </span>
-              {r.total > 0 && (
-                <span className="mt-1 block h-1 overflow-hidden rounded-full bg-surface-2">
-                  <span className="block h-full bg-brand" style={{ width: `${pct}%` }} />
+          <li className="px-3 py-2">
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={() => toggle("reader")} className="flex min-w-0 flex-1 items-center gap-2 text-left" aria-expanded={shown === "reader"}>
+                <BookOpenText size={16} className={cx("shrink-0 text-brand", !reading.paused && !r.note && "animate-pulse")} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-medium">
+                    {reading.paused ? "Reading paused" : "Reading"} · {r.name}
+                  </span>
+                  <span className="block truncate text-muted">
+                    {r.note ? "Waiting, tap for details" : r.total ? `page ${r.cursor} of ${r.total} (${pct}%)` : "starting…"}
+                    {r.left > 1 ? ` · ${r.left - 1} more file${r.left > 2 ? "s" : ""} waiting` : ""}
+                  </span>
+                  {r.total > 0 && shown !== "reader" && (
+                    <span className="mt-1 block h-1 overflow-hidden rounded-full bg-surface-2">
+                      <span className="block h-full bg-brand" style={{ width: `${pct}%` }} />
+                    </span>
+                  )}
                 </span>
-              )}
-            </Link>
-            <button
-              type="button"
-              onClick={() => reading.setPaused(!reading.paused)}
-              className="grid size-8 shrink-0 place-items-center rounded-lg text-muted hover:bg-surface-2"
-              aria-label={reading.paused ? "Resume reading" : "Pause reading"}
-              title={reading.paused ? "Resume reading" : "Pause reading"}
-            >
-              {reading.paused ? <Play size={15} /> : <Pause size={15} />}
-            </button>
+                {shown === "reader" ? <ChevronDown size={16} className="shrink-0 text-muted" /> : <ChevronRight size={16} className="shrink-0 text-muted" />}
+              </button>
+              <button
+                type="button"
+                onClick={() => reading.setPaused(!reading.paused)}
+                className="grid size-8 shrink-0 place-items-center rounded-lg text-muted hover:bg-surface-2"
+                aria-label={reading.paused ? "Resume reading" : "Pause reading"}
+                title={reading.paused ? "Resume reading" : "Pause reading"}
+              >
+                {reading.paused ? <Play size={15} /> : <Pause size={15} />}
+              </button>
+            </div>
+            {shown === "reader" && (
+              <div className="mt-2">
+                <ProcessDetails
+                  fileId={r.id}
+                  live={{ step: "ai", done: r.cursor, total: r.total, note: r.note, retryAt: r.retryAt, paused: reading.paused }}
+                  onRetryNow={r.note ? reading.retryNow : undefined}
+                />
+              </div>
+            )}
           </li>
         )}
       </ul>
