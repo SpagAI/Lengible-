@@ -8,7 +8,6 @@ import { cx } from "@/components/ui";
 import { SignOutButton } from "@/components/sign-out-button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { setSidebarCollapsed } from "@/components/theme";
-import { ReadingQueue } from "@/components/reading-queue";
 
 function isActive(pathname: string, href: string) {
   return href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/");
@@ -89,8 +88,6 @@ export function AppShell({ children, email }: { children: React.ReactNode; email
         </header>
         <main className="mx-auto w-full max-w-5xl flex-1 px-4 pt-5 pb-28 md:px-8 md:pt-8 md:pb-10">{children}</main>
       </div>
-
-      <ReadingQueue />
 
       {/* Phone bottom bar */}
       <nav className="pb-safe fixed inset-x-0 bottom-0 z-20 border-t border-border bg-surface/95 backdrop-blur md:hidden">

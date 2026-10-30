@@ -2,15 +2,13 @@
 
 import { useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { CheckCircle2, CircleAlert, Loader2, Upload, X, Eye, PauseCircle } from "lucide-react";
-import { useSupabase } from "@/lib/supabase/client";
-import { createFileRecord } from "@/app/(app)/library/actions";
 import { docTypes } from "@/lib/library";
-import { runPipeline, type Progress } from "./pipeline";
+import { useBackgroundWork } from "@/components/background-work";
+import type { Progress } from "./pipeline";
 import { Button, Card, Field, inputClass, cx } from "@/components/ui";
 
-type Item = { key: string; file: File; id?: string; progress: Progress };
+type Item = { key: string; file: File };
 
 const stageText: Record<Progress["stage"], string> = {
   waiting: "Waiting",
@@ -50,38 +48,29 @@ export function UploadPanel({
   topics: { id: string; name: string }[];
   onClose: () => void;
 }) {
-  const supabase = useSupabase();
-  const router = useRouter();
+  const { jobs, addUploads } = useBackgroundWork();
   const input = useRef<HTMLInputElement>(null);
+  // Files chosen but not started yet; once started they're handed to the background uploader,
+  // which keeps going if you leave this page.
   const [items, setItems] = useState<Item[]>([]);
+  const [batch] = useState(() => crypto.randomUUID());
   const [docType, setDocType] = useState("auto");
   const [topicId, setTopicId] = useState("");
-  const [busy, setBusy] = useState(false);
+  const mine = jobs.filter((j) => j.batch === batch);
+  const busy = mine.some((j) => ["waiting", "uploading", "reading", "analysing"].includes(j.progress.stage));
 
-  const update = (key: string, patch: Partial<Item>) => setItems((cur) => cur.map((i) => (i.key === key ? { ...i, ...patch } : i)));
-
-  async function start() {
-    setBusy(true);
-    for (const item of items.filter((i) => i.progress.stage === "waiting")) {
-      const type = docType === "auto" ? guessType(item.file.name) || "other" : docType;
-      const record = await createFileRecord({
+  function start() {
+    addUploads(
+      items.map((item) => ({
+        batch,
+        file: item.file,
+        type: docType === "auto" ? guessType(item.file.name) || "other" : docType,
         courseId,
         folderId,
         topicId: topicId || null,
-        name: item.file.name,
-        docType: type,
-        mime: item.file.type,
-        size: item.file.size,
-      });
-      if ("error" in record) {
-        update(item.key, { progress: { stage: "error", message: record.error } });
-        continue;
-      }
-      update(item.key, { id: record.id });
-      await runPipeline(supabase, item.file, record as { id: string; path: string }, courseId, (progress) => update(item.key, { progress }));
-    }
-    setBusy(false);
-    router.refresh();
+      })),
+    );
+    setItems([]);
   }
 
   return (
@@ -101,7 +90,7 @@ export function UploadPanel({
         className="hidden"
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
-          setItems((cur) => [...cur, ...files.map((file) => ({ key: crypto.randomUUID(), file, progress: { stage: "waiting" as const } }))]);
+          setItems((cur) => [...cur, ...files.map((file) => ({ key: crypto.randomUUID(), file }))]);
           e.target.value = "";
         }}
       />
@@ -133,9 +122,9 @@ export function UploadPanel({
         </Field>
       </div>
 
-      {items.length > 0 && (
+      {(items.length > 0 || mine.length > 0) && (
         <ul className="space-y-2">
-          {items.map((i) => (
+          {mine.map((i) => (
             <li key={i.key} className="flex items-start gap-3 rounded-xl bg-surface-2 p-3 text-sm">
               <StageIcon stage={i.progress.stage} />
               <div className="min-w-0 flex-1">
@@ -155,25 +144,37 @@ export function UploadPanel({
                   <Eye size={14} className="inline" /> Open
                 </Link>
               )}
-              {i.progress.stage === "waiting" && !busy && (
-                <button type="button" aria-label="Remove" onClick={() => setItems(items.filter((x) => x.key !== i.key))}>
-                  <X size={16} />
-                </button>
-              )}
+            </li>
+          ))}
+          {items.map((i) => (
+            <li key={i.key} className="flex items-start gap-3 rounded-xl bg-surface-2 p-3 text-sm">
+              <StageIcon stage="waiting" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate font-medium">{i.file.name}</p>
+                <p className="text-xs text-muted">Ready to upload</p>
+              </div>
+              <button type="button" aria-label="Remove" onClick={() => setItems(items.filter((x) => x.key !== i.key))}>
+                <X size={16} />
+              </button>
             </li>
           ))}
         </ul>
       )}
 
-      <Button type="button" onClick={start} disabled={busy || !items.some((i) => i.progress.stage === "waiting")} className="w-full">
-        {busy ? (
+      <Button type="button" onClick={start} disabled={!items.length} className="w-full">
+        {busy && !items.length ? (
           <>
-            <Loader2 size={16} className="animate-spin" /> Working — keep this page open
+            <Loader2 size={16} className="animate-spin" /> Uploading…
           </>
         ) : (
           "Upload"
         )}
       </Button>
+      {busy && (
+        <p className="-mt-2 text-center text-xs text-muted">
+          You can leave this page. Uploads and reading carry on while you use Lengible; follow them in the corner panel.
+        </p>
+      )}
     </Card>
   );
 }

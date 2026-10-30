@@ -5,6 +5,7 @@ import { Card } from "@/components/ui";
 import { SupabaseProvider } from "@/lib/supabase/client";
 import { supabaseEnv } from "@/lib/supabase/env";
 import { RefreshOnce } from "@/components/refresh-once";
+import { BackgroundWorkProvider } from "@/components/background-work";
 
 export default async function AppLayout({ children }: LayoutProps<"/">) {
   const { supabase, user } = await requireUser();
@@ -12,7 +13,9 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
   const { url, key } = supabaseEnv();
   return (
     <SupabaseProvider url={url!} anonKey={key!}>
-      <AppShell email={user.email ?? ""}>{seeded === "needs_migration" ? <MigrationNotice /> : children}</AppShell>
+      <BackgroundWorkProvider>
+        <AppShell email={user.email ?? ""}>{seeded === "needs_migration" ? <MigrationNotice /> : children}</AppShell>
+      </BackgroundWorkProvider>
       {seeded === "changed" && <RefreshOnce />}
     </SupabaseProvider>
   );
