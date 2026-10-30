@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Download, FileText, Folder, Loader2, RefreshCw, Sparkles } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Download, FileText, Folder, Loader2, Play, RefreshCw, Sparkles } from "lucide-react";
 import type { DriveItem } from "@/lib/supabase/types";
 import { checkDriveLink, setAutoImport, setFolderCourse, setFolderInclude, updateDriveItem } from "@/app/(app)/library/drive/actions";
 import { useBackgroundWork } from "@/components/background-work";
@@ -20,9 +20,23 @@ const statusChip: Record<DriveItem["status"], { label: string; cls: string }> = 
   removed: { label: "No longer in the link", cls: "bg-surface-2 text-muted" },
 };
 
-export function DriveTree({ sourceId, items: initial, courses, autoImport }: { sourceId: string; items: DriveItem[]; courses: Course[]; autoImport: boolean }) {
+export function DriveTree({
+  sourceId,
+  items: initial,
+  courses,
+  autoImport,
+  fileStatus,
+}: {
+  sourceId: string;
+  items: DriveItem[];
+  courses: Course[];
+  autoImport: boolean;
+  fileStatus: Record<string, string>;
+}) {
   const router = useRouter();
-  const { addDriveImports, jobs } = useBackgroundWork();
+  const { addDriveImports, addProcessJobs, jobs } = useBackgroundWork();
+  // Bringing in only copies files; tick this to read them straight away too.
+  const [processNow, setProcessNow] = useState(false);
   // Your ticks and choices made on this page, laid over the latest list from the server
   // (so a refresh after "Check for changes" shows new files without losing anything).
   const [overrides, setOverrides] = useState<Record<string, Partial<DriveItem>>>({});
@@ -48,7 +62,15 @@ export function DriveTree({ sourceId, items: initial, courses, autoImport }: { s
   };
   const toBringAll = items.filter((i) => i.include && (i.status === "new" || i.status === "changed" || i.status === "error"));
   const toBring = toBringAll;
-  const running = new Set(jobs.filter((j) => j.driveItemId && ["waiting", "uploading", "reading", "analysing"].includes(j.progress.stage)).map((j) => j.driveItemId));
+  const active = jobs.filter((j) => ["waiting", "uploading", "reading", "analysing"].includes(j.progress.stage));
+  const running = new Set(active.flatMap((j) => [j.driveItemId, j.processFileId, j.id].filter(Boolean) as string[]));
+  // Files in your Library that are stored but not processed yet (in a folder, or "" for everything).
+  const isStored = (i: DriveItem) => i.status === "imported" && !!i.file_id && fileStatus[i.file_id] === "uploaded";
+  const storedIn = (path: string) => items.filter((i) => isStored(i) && !running.has(i.file_id!) && (!path || i.path === path || i.path.startsWith(`${path}/`)));
+  const processThese = (list: DriveItem[]) => {
+    addProcessJobs(list.map((i) => ({ id: i.file_id!, name: i.name })));
+    setNote({ ok: true, text: `Processing ${list.length} file${list.length === 1 ? "" : "s"}. Follow them in the corner panel; you can leave this page.` });
+  };
 
   const shown = items.filter((i) =>
     filter === "all"
@@ -96,8 +118,13 @@ export function DriveTree({ sourceId, items: initial, courses, autoImport }: { s
           <Button
             disabled={!toBring.length}
             onClick={() => {
-              addDriveImports(toBring.map((i) => ({ id: i.id, name: i.name, courseId: i.course_id, changed: i.status === "changed" })));
-              setNote({ ok: true, text: `${toBring.length} file${toBring.length === 1 ? "" : "s"} on the way. Follow them in the corner panel; you can leave this page.` });
+              addDriveImports(toBring.map((i) => ({ id: i.id, name: i.name, courseId: i.course_id, changed: i.status === "changed", process: processNow })));
+              setNote({
+                ok: true,
+                text: processNow
+                  ? `${toBring.length} file${toBring.length === 1 ? "" : "s"} coming in and being processed. Follow them in the corner panel; you can leave this page.`
+                  : `${toBring.length} file${toBring.length === 1 ? "" : "s"} coming in (stored only). Then pick folders or files to Process when you need them.`,
+              });
             }}
           >
             <Download size={16} /> Bring in {toBring.length} file{toBring.length === 1 ? "" : "s"}
@@ -116,6 +143,21 @@ export function DriveTree({ sourceId, items: initial, courses, autoImport }: { s
             {checking ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />} Check for changes
           </Button>
         </div>
+        <label className="flex items-start gap-2 text-sm">
+          <input type="checkbox" checked={processNow} onChange={(e) => setProcessNow(e.target.checked)} className="mt-0.5 size-4 accent-[var(--brand)]" />
+          <span>
+            Also process them now
+            <span className="block text-xs text-muted">
+              Off: files are only copied into your Library (quick). Tap <b>Process</b> on a folder or file when you need it read for topics,
+              quizzes and flashcards.
+            </span>
+          </span>
+        </label>
+        {storedIn("").length > 0 && (
+          <Button variant="secondary" onClick={() => processThese(storedIn(""))}>
+            <Play size={16} /> Process all stored files ({storedIn("").length})
+          </Button>
+        )}
         <label className="flex items-start gap-2 text-sm">
           <input
             type="checkbox"
@@ -232,6 +274,16 @@ export function DriveTree({ sourceId, items: initial, courses, autoImport }: { s
                         {tickState(path).on}/{tickState(path).total}
                       </span>
                     </span>
+                    {storedIn(path).length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => processThese(storedIn(path))}
+                        className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-brand px-2 py-1 text-xs font-medium text-on-brand"
+                        title="Read these files for topics, quizzes and flashcards"
+                      >
+                        <Play size={12} /> Process {storedIn(path).length}
+                      </button>
+                    )}
                     <select
                       value={c === "mixed" ? "mixed" : c}
                       onChange={async (e) => {
@@ -272,12 +324,21 @@ export function DriveTree({ sourceId, items: initial, courses, autoImport }: { s
                         <span className="block truncate">{i.name}</span>
                       )}
                       <span className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
-                        {running.has(i.id) ? (
+                        {running.has(i.id) || (i.file_id && running.has(i.file_id)) ? (
                           <span className="inline-flex items-center gap-1 text-brand">
-                            <Loader2 size={11} className="animate-spin" /> Bringing in…
+                            <Loader2 size={11} className="animate-spin" /> {running.has(i.id) ? "Bringing in…" : "Processing…"}
                           </span>
+                        ) : isStored(i) ? (
+                          <>
+                            <span className="rounded-full bg-surface-2 px-1.5 text-muted">Stored · not processed</span>
+                            <button type="button" onClick={() => processThese([i])} className="inline-flex items-center gap-0.5 font-medium text-brand">
+                              <Play size={11} /> Process
+                            </button>
+                          </>
                         ) : (
-                          <span className={cx("rounded-full px-1.5", statusChip[i.status].cls)}>{statusChip[i.status].label}</span>
+                          <span className={cx("rounded-full px-1.5", statusChip[i.status].cls)}>
+                            {i.status === "imported" ? "Processed" : statusChip[i.status].label}
+                          </span>
                         )}
                         {i.size_bytes ? formatBytes(i.size_bytes) : null}
                         {i.error && <span className={i.status === "error" ? "text-danger" : ""}>{i.error}</span>}

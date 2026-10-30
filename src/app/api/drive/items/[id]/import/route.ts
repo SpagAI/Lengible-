@@ -47,7 +47,9 @@ export async function POST(_req: Request, ctx: RouteContext<"/api/drive/items/[i
     const buf = await download(item);
     const name = libraryName(item.name, item.mime);
     const mime = libraryMime(item.mime);
-    const { data: old } = item.file_id ? await supabase.from("files").select("id, storage_path, version").eq("id", item.file_id).maybeSingle() : { data: null };
+    const { data: old } = item.file_id ? await supabase.from("files").select("id, storage_path, version, status").eq("id", item.file_id).maybeSingle() : { data: null };
+    // A newer version of a file you had already processed is processed again; one you hadn't stays waiting.
+    const wasProcessed = !!old && old.status !== "uploaded";
     const fileId = old?.id ?? crypto.randomUUID();
     const path = storagePath(auth.user.id, fileId, name, (old?.version ?? 0) + 1);
     const { error: upErr } = await supabase.storage.from("library").upload(path, buf, { contentType: mime, upsert: true });
@@ -80,7 +82,7 @@ export async function POST(_req: Request, ctx: RouteContext<"/api/drive/items/[i
     }
     await supabase.from("drive_items").update({ file_id: fileId }).eq("id", id);
     const { data: signed } = await supabase.storage.from("library").createSignedUrl(path, 3600);
-    return NextResponse.json({ status: "ok", fileId, path, name, mime, courseId: item.course_id, replaced: !!old, url: signed?.signedUrl });
+    return NextResponse.json({ status: "ok", fileId, path, name, mime, courseId: item.course_id, replaced: !!old, wasProcessed, url: signed?.signedUrl });
   } catch (e) {
     const message = e instanceof DriveError ? e.message : "Couldn't bring this file in.";
     await supabase.from("drive_items").update({ status: "error", error: message, claimed_at: null }).eq("id", id);

@@ -21,6 +21,10 @@ export type UploadJob = {
   // A file chosen on this device, or one to bring in from a Google Drive link.
   file?: File;
   driveItemId?: string;
+  // Process a file already stored in Lengible (brought in from Drive, or an upload that stopped).
+  processFileId?: string;
+  // For Drive files: read it now (otherwise it is only stored until you tap Process).
+  process?: boolean;
   type: string;
   courseId: string | null;
   folderId: string | null;
@@ -28,11 +32,17 @@ export type UploadJob = {
   id?: string;
   progress: Progress;
 };
-type NewUpload = Omit<UploadJob, "key" | "progress" | "id" | "name" | "driveItemId" | "file"> & { file: File };
-export type DriveImport = { id: string; name: string; courseId: string | null; changed?: boolean };
+type NewUpload = Omit<UploadJob, "key" | "progress" | "id" | "name" | "driveItemId" | "processFileId" | "process" | "file"> & { file: File };
+export type DriveImport = { id: string; name: string; courseId: string | null; changed?: boolean; process?: boolean };
+export type StoredFile = { id: string; name: string };
 type Reading = { id: string; name: string; cursor: number; total: number; left: number; note?: string; retryAt?: number } | null;
 
-const Ctx = createContext<{ jobs: UploadJob[]; addUploads: (items: NewUpload[]) => void; addDriveImports: (items: DriveImport[]) => void } | null>(null);
+const Ctx = createContext<{
+  jobs: UploadJob[];
+  addUploads: (items: NewUpload[]) => void;
+  addDriveImports: (items: DriveImport[]) => void;
+  addProcessJobs: (files: StoredFile[]) => void;
+} | null>(null);
 export const useBackgroundWork = () => useContext(Ctx)!;
 
 const ACTIVE: Progress["stage"][] = ["waiting", "uploading", "reading", "analysing"];
@@ -68,11 +78,26 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
   // Drive: the server copies the file into your storage, then this device reads it like an upload.
   const bringInFromDrive = useCallback(
     async (job: UploadJob) => {
-      const r = await postJSON<{ status: string; message?: string; fileId?: string; path?: string; name?: string; mime?: string; courseId?: string | null; url?: string }>(
-        `/api/drive/items/${job.driveItemId}/import`,
-      );
+      const r = await postJSON<{
+        status: string;
+        message?: string;
+        fileId?: string;
+        path?: string;
+        name?: string;
+        mime?: string;
+        courseId?: string | null;
+        url?: string;
+        wasProcessed?: boolean;
+      }>(`/api/drive/items/${job.driveItemId}/import`);
       if (r.status !== "ok" || !r.url) {
         update(job.key, { progress: { stage: r.status === "busy" ? "done" : "error", message: r.status === "busy" ? "Already brought in elsewhere." : r.message } });
+        return;
+      }
+      if (!job.process && !r.wasProcessed) {
+        // Stored only: it waits in your Library until you tap Process.
+        await postJSON(`/api/drive/items/${job.driveItemId}/done`);
+        update(job.key, { id: r.fileId, progress: { stage: "done", message: "Stored. Tap Process when you need it." } });
+        router.refresh();
         return;
       }
       update(job.key, { id: r.fileId, progress: { stage: "uploading", step: "upload", message: "Copied from Google Drive" } });
@@ -86,6 +111,30 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
       }
       await runPipeline(supabase, file, { id: r.fileId!, path: r.path! }, r.courseId ?? null, (progress) => update(job.key, { progress }), { uploaded: true });
       await postJSON(`/api/drive/items/${job.driveItemId}/done`);
+    },
+    [supabase, update, router],
+  );
+
+  // Process a stored file: read it from the start, the same way as an upload.
+  const processStored = useCallback(
+    async (job: UploadJob) => {
+      const r = await postJSON<{ status: string; message?: string; url?: string; name?: string; mime?: string; path?: string; courseId?: string | null }>(
+        `/api/files/${job.processFileId}/prepare`,
+      );
+      if (r.status !== "ok" || !r.url) {
+        update(job.key, { progress: { stage: "error", message: r.message ?? "Couldn't open the stored file." } });
+        return;
+      }
+      update(job.key, { id: job.processFileId });
+      let file: File;
+      try {
+        const blob = await (await fetch(r.url)).blob();
+        file = new File([blob], r.name!, { type: r.mime || blob.type });
+      } catch {
+        update(job.key, { progress: { stage: "error", message: "Couldn't download the stored file. Check your connection and try again." } });
+        return;
+      }
+      await runPipeline(supabase, file, { id: job.processFileId!, path: r.path! }, r.courseId ?? null, (progress) => update(job.key, { progress }), { uploaded: true });
     },
     [supabase, update],
   );
@@ -101,6 +150,11 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
         update(job.key, { progress: { stage: "uploading", step: "upload" } });
         if (job.driveItemId) {
           await bringInFromDrive(job);
+          continue;
+        }
+        if (job.processFileId) {
+          await processStored(job);
+          router.refresh();
           continue;
         }
         const file = job.file!;
@@ -124,7 +178,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
     } finally {
       running.current = false;
     }
-  }, [supabase, router, update, bringInFromDrive]);
+  }, [supabase, router, update, bringInFromDrive, processStored]);
 
   const addUploads = useCallback(
     (items: NewUpload[]) => {
@@ -147,8 +201,33 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
           batch: "drive",
           name: i.changed ? `${i.name} (newer version)` : i.name,
           driveItemId: i.id,
+          process: i.process,
           type: "",
           courseId: i.courseId,
+          folderId: null,
+          topicId: null,
+          progress: { stage: "waiting" as const },
+        }));
+      if (!added.length) return;
+      jobsRef.current = [...jobsRef.current, ...added];
+      setJobs(jobsRef.current);
+      void pump();
+    },
+    [pump],
+  );
+
+  const addProcessJobs = useCallback(
+    (files: StoredFile[]) => {
+      const queued = new Set(jobsRef.current.filter((j) => ACTIVE.includes(j.progress.stage)).map((j) => j.processFileId));
+      const added = files
+        .filter((f) => !queued.has(f.id))
+        .map((f) => ({
+          key: crypto.randomUUID(),
+          batch: "process",
+          name: f.name,
+          processFileId: f.id,
+          type: "",
+          courseId: null,
           folderId: null,
           topicId: null,
           progress: { stage: "waiting" as const },
@@ -192,7 +271,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
   const reading = useReadingQueue();
 
   return (
-    <Ctx.Provider value={{ jobs, addUploads, addDriveImports }}>
+    <Ctx.Provider value={{ jobs, addUploads, addDriveImports, addProcessJobs }}>
       {children}
       <Dock
         jobs={jobs}

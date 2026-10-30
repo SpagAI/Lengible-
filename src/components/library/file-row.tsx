@@ -15,7 +15,7 @@ export function FileTypeIcon({ file, size = 20 }: { file: Pick<LibraryFile, "mim
 }
 
 const statusBadge: Partial<Record<LibraryFile["status"], { text: string; cls: string }>> = {
-  uploaded: { text: "Processing", cls: "bg-surface-2 text-muted" },
+  uploaded: { text: "Not processed", cls: "bg-surface-2 text-muted" },
   no_text: { text: "Needs AI reading", cls: "bg-warn/15 text-warn" },
   failed: { text: "Failed", cls: "bg-danger/15 text-danger" },
 };

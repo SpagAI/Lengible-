@@ -13,6 +13,7 @@ import { LinkedText } from "@/components/library/linked-text";
 import { ConfirmButton } from "@/components/confirm-button";
 import { MaterialCardsButton } from "@/components/flashcards/deck-buttons";
 import { ProcessDetails } from "@/components/process-details";
+import { ProcessFileButton } from "@/components/library/process-bar";
 import type { Concept, LibraryFile } from "@/lib/supabase/types";
 
 export async function generateMetadata({ params }: PageProps<"/library/file/[id]">): Promise<Metadata> {
@@ -97,6 +98,14 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
         viewUrl={viewUrl}
         downloadUrl={download.data?.signedUrl ?? viewUrl}
       />
+
+      {/* Stored (e.g. from Drive) but not read yet: process it when you need it. */}
+      {file.status === "uploaded" && (
+        <div className="mt-3 flex flex-wrap items-center gap-3 rounded-xl bg-brand-soft p-3 text-sm">
+          <span className="text-brand-strong">Stored in your Library, not processed yet.</span>
+          <ProcessFileButton file={{ id: file.id, name: file.name }} />
+        </div>
+      )}
 
       {/* Flashcards from this file (needs its text, so not for timetables or files still being read) */}
       {(file.status === "extracted" || file.status === "analysed") && !importableTypes.includes(file.doc_type) && (

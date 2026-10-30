@@ -24,6 +24,13 @@ export default async function DriveSourcePage({ params }: PageProps<"/library/dr
     supabase.from("drive_items").select("*").eq("source_id", id).order("path").order("name").limit(5000),
     getCourses(supabase),
   ]);
+  // Whether each file brought in has been processed yet ("uploaded" = stored, waiting for you to tap Process).
+  const fileIds = (items ?? []).flatMap((i) => (i.file_id ? [i.file_id] : []));
+  const fileStatus: Record<string, string> = {};
+  for (let k = 0; k < fileIds.length; k += 200) {
+    const { data } = await supabase.from("files").select("id, status").in("id", fileIds.slice(k, k + 200));
+    for (const f of data ?? []) fileStatus[f.id] = f.status;
+  }
   return (
     <>
       <Link href="/library/drive" className="mb-1 inline-flex items-center gap-1 text-sm text-brand">
@@ -42,6 +49,7 @@ export default async function DriveSourcePage({ params }: PageProps<"/library/dr
         items={(items ?? []) as DriveItem[]}
         courses={leafCourses(courses).map((c) => ({ id: c.id, name: c.name }))}
         autoImport={source.auto_import}
+        fileStatus={fileStatus}
       />
       <form action={removeDriveLink} className="mt-6">
         <input type="hidden" name="id" value={id} />

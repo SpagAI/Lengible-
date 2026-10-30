@@ -7,6 +7,7 @@ import { getCourses } from "@/lib/courses";
 import { courseFromParam, folderPath } from "@/lib/library";
 import { PageHeader, Card, EmptyState } from "@/components/ui";
 import { FileRow } from "@/components/library/file-row";
+import { ProcessBar } from "@/components/library/process-bar";
 import { SearchBox } from "@/components/library/search-box";
 import { LibraryToolbar } from "@/components/library/toolbar";
 import type { Folder, LibraryFile } from "@/lib/supabase/types";
@@ -27,7 +28,8 @@ export default async function CourseLibraryPage({ params, searchParams }: PagePr
 
   const folderQuery = supabase.from("folders").select("*").order("name");
   const fileQuery = supabase.from("files").select("*").order("name");
-  const [{ data: folders }, { data: files }, { data: topics }] = await Promise.all([
+  const storedQuery = supabase.from("files").select("id, name, folder_id").eq("status", "uploaded").order("name").limit(1000);
+  const [{ data: folders }, { data: files }, { data: topics }, { data: stored }] = await Promise.all([
     courseId ? folderQuery.eq("course_id", courseId) : folderQuery.is("course_id", null),
     (courseId ? fileQuery.eq("course_id", courseId) : fileQuery.is("course_id", null)).filter(
       "folder_id",
@@ -37,6 +39,8 @@ export default async function CourseLibraryPage({ params, searchParams }: PagePr
     courseId
       ? supabase.from("topics").select("id, name").in("course_id", [courseId, ...children.map((c) => c.id)]).neq("session_type", "section").order("name")
       : Promise.resolve({ data: [] as { id: string; name: string }[] }),
+    // Stored but not processed yet, anywhere in this course.
+    courseId ? storedQuery.eq("course_id", courseId) : storedQuery.is("course_id", null),
   ]);
 
   const allFolders = (folders ?? []) as Folder[];
@@ -44,6 +48,18 @@ export default async function CourseLibraryPage({ params, searchParams }: PagePr
   if (folderId && !current) notFound();
   const path = folderPath(allFolders, folderId);
   const subfolders = allFolders.filter((f) => f.parent_id === folderId);
+  // Not-yet-processed files in this folder and its subfolders (or the whole course at the top).
+  const inside = new Set<string | null>([folderId]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const f of allFolders) {
+      if (f.parent_id && inside.has(f.parent_id) && !inside.has(f.id)) {
+        inside.add(f.id);
+        grew = true;
+      }
+    }
+  }
+  const waiting = (stored ?? []).filter((f) => !folderId || inside.has(f.folder_id)).map((f) => ({ id: f.id, name: f.name }));
   const title = course?.name ?? "General";
   const base = `/library/course/${id}`;
 
@@ -111,6 +127,7 @@ export default async function CourseLibraryPage({ params, searchParams }: PagePr
       )}
 
       <div className="mt-4">
+        <ProcessBar files={waiting} />
         {files?.length ? (
           <Card className="divide-y divide-border p-0">
             {(files as LibraryFile[]).map((f) => (
