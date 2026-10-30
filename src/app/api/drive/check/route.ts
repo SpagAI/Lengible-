@@ -33,12 +33,45 @@ export async function GET(req: NextRequest) {
   const stale = new Date(Date.now() - 15 * 60_000).toISOString();
   const { data: items } = await supabase
     .from("drive_items")
-    .select("id, name, course_id, status, source_id, claimed_at")
+    .select("id, name, course_id, status, source_id, claimed_at, path")
     .eq("include", true)
     .in("status", ["new", "changed"])
     .or(`claimed_at.is.null,claimed_at.lt.${stale}`)
     .limit(200);
   // Changed files you brought in before are always refreshed; new files only for links that bring them in by themselves.
   const todo = (items ?? []).filter((i) => i.status === "changed" || auto.has(i.source_id));
-  return NextResponse.json({ ...summary, items: todo.map((i) => ({ id: i.id, name: i.name, courseId: i.course_id, changed: i.status === "changed" })) });
+  // A new file lands in a folder whose files you've already processed: process it too.
+  // (Changed files are processed again only if you had processed them; the import works that out.)
+  const processedFolders = new Set<string>();
+  const fresh = todo.filter((i) => i.status === "new");
+  if (fresh.length) {
+    const { data: brought } = await supabase
+      .from("drive_items")
+      .select("source_id, path, file_id")
+      .in("source_id", [...new Set(fresh.map((i) => i.source_id))])
+      .eq("status", "imported")
+      .not("file_id", "is", null);
+    const ids = [...new Set((brought ?? []).map((b) => b.file_id!))];
+    const status = new Map<string, string>();
+    for (let k = 0; k < ids.length; k += 200) {
+      const { data } = await supabase.from("files").select("id, status").in("id", ids.slice(k, k + 200));
+      for (const f of data ?? []) status.set(f.id, f.status);
+    }
+    const byFolder = new Map<string, string[]>();
+    for (const b of brought ?? []) {
+      const key = `${b.source_id}/${b.path}`;
+      byFolder.set(key, [...(byFolder.get(key) ?? []), status.get(b.file_id!) ?? "uploaded"]);
+    }
+    for (const [key, list] of byFolder) if (list.every((st) => st !== "uploaded")) processedFolders.add(key);
+  }
+  return NextResponse.json({
+    ...summary,
+    items: todo.map((i) => ({
+      id: i.id,
+      name: i.name,
+      courseId: i.course_id,
+      changed: i.status === "changed",
+      process: i.status === "new" && processedFolders.has(`${i.source_id}/${i.path}`),
+    })),
+  });
 }

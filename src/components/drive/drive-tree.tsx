@@ -12,12 +12,12 @@ import { Button, Card, cx, inputClass } from "@/components/ui";
 
 type Course = { id: string; name: string };
 const statusChip: Record<DriveItem["status"], { label: string; cls: string }> = {
-  new: { label: "New", cls: "bg-brand-soft text-brand-strong" },
+  new: { label: "Not taken", cls: "bg-surface-2 text-muted" },
   changed: { label: "Changed in Drive", cls: "bg-warn/15 text-warn" },
   imported: { label: "In your Library", cls: "bg-ok/15 text-ok" },
   skipped: { label: "Can't be read", cls: "bg-surface-2 text-muted" },
   error: { label: "Problem", cls: "bg-danger/10 text-danger" },
-  removed: { label: "No longer in the link", cls: "bg-surface-2 text-muted" },
+  removed: { label: "Deleted in Drive · kept in your Library", cls: "bg-surface-2 text-muted" },
 };
 
 export function DriveTree({
@@ -35,8 +35,6 @@ export function DriveTree({
 }) {
   const router = useRouter();
   const { addDriveImports, addProcessJobs, jobs } = useBackgroundWork();
-  // Bringing in only copies files; tick this to read them straight away too.
-  const [processNow, setProcessNow] = useState(false);
   // Your ticks and choices made on this page, laid over the latest list from the server
   // (so a refresh after "Check for changes" shows new files without losing anything).
   const [overrides, setOverrides] = useState<Record<string, Partial<DriveItem>>>({});
@@ -51,7 +49,7 @@ export function DriveTree({
       return copy;
     });
   };
-  const [filter, setFilter] = useState<"todo" | "all" | "lib" | "skip">(initial.some((i) => i.status === "new" || i.status === "changed") ? "todo" : "all");
+  const [filter, setFilter] = useState<"todo" | "all" | "lib" | "skip">("all");
   const [checking, startCheck] = useTransition();
   const [note, setNote] = useState<{ ok: boolean; text: string }>();
   const [auto, setAuto] = useState(autoImport);
@@ -111,23 +109,39 @@ export function DriveTree({
     return ids.size === 1 ? [...ids][0] : "mixed";
   };
 
+  const bring = (process: boolean) => {
+    addDriveImports(toBring.map((i) => ({ id: i.id, name: i.name, courseId: i.course_id, changed: i.status === "changed", process })));
+    const n = `${toBring.length} file${toBring.length === 1 ? "" : "s"}`;
+    setNote({
+      ok: true,
+      text: process
+        ? `${n} coming in and being processed. Follow them in the corner panel; you can leave this page.`
+        : `${n} coming in (stored only). Tap Process on a folder or file when you need it read.`,
+    });
+  };
+  const nothingYet = !items.some((i) => i.status === "imported");
+
   return (
     <div className="space-y-4">
       <Card className="space-y-3">
+        {nothingYet && (
+          <ol className="list-decimal space-y-0.5 pl-5 text-sm text-muted">
+            <li>
+              <b className="text-text">Tick</b> the folders and files you want in Lengible (below). Nothing is taken until you choose.
+            </li>
+            <li>
+              <b className="text-text">Bring in only</b> to store them, or <b className="text-text">Bring in &amp; process</b> to also read them for topics,
+              quizzes and flashcards.
+            </li>
+            <li>What you picked stays up to date with Drive.</li>
+          </ol>
+        )}
         <div className="flex flex-wrap items-center gap-2">
-          <Button
-            disabled={!toBring.length}
-            onClick={() => {
-              addDriveImports(toBring.map((i) => ({ id: i.id, name: i.name, courseId: i.course_id, changed: i.status === "changed", process: processNow })));
-              setNote({
-                ok: true,
-                text: processNow
-                  ? `${toBring.length} file${toBring.length === 1 ? "" : "s"} coming in and being processed. Follow them in the corner panel; you can leave this page.`
-                  : `${toBring.length} file${toBring.length === 1 ? "" : "s"} coming in (stored only). Then pick folders or files to Process when you need them.`,
-              });
-            }}
-          >
-            <Download size={16} /> Bring in {toBring.length} file{toBring.length === 1 ? "" : "s"}
+          <Button disabled={!toBring.length} onClick={() => bring(false)}>
+            <Download size={16} /> Bring in only{toBring.length ? ` (${toBring.length})` : ""}
+          </Button>
+          <Button variant="secondary" disabled={!toBring.length} onClick={() => bring(true)}>
+            <Play size={16} /> Bring in &amp; process{toBring.length ? ` (${toBring.length})` : ""}
           </Button>
           <Button
             variant="secondary"
@@ -136,6 +150,13 @@ export function DriveTree({
               startCheck(async () => {
                 const r = await checkDriveLink(sourceId);
                 setNote(r.error ? { ok: false, text: r.error } : { ok: true, text: r.message! });
+                // Updates to what you picked come in straight away.
+                if (!r.error && auto) {
+                  try {
+                    const c = await (await fetch("/api/drive/check", { cache: "no-store" })).json();
+                    if (c.items?.length) addDriveImports(c.items);
+                  } catch {}
+                }
                 router.refresh();
               })
             }
@@ -143,16 +164,7 @@ export function DriveTree({
             {checking ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />} Check for changes
           </Button>
         </div>
-        <label className="flex items-start gap-2 text-sm">
-          <input type="checkbox" checked={processNow} onChange={(e) => setProcessNow(e.target.checked)} className="mt-0.5 size-4 accent-[var(--brand)]" />
-          <span>
-            Also process them now
-            <span className="block text-xs text-muted">
-              Off: files are only copied into your Library (quick). Tap <b>Process</b> on a folder or file when you need it read for topics,
-              quizzes and flashcards.
-            </span>
-          </span>
-        </label>
+        {!toBring.length && nothingYet && <p className="text-xs text-muted">Tick something below to bring it in.</p>}
         {storedIn("").length > 0 && (
           <Button variant="secondary" onClick={() => processThese(storedIn(""))}>
             <Play size={16} /> Process all stored files ({storedIn("").length})
@@ -169,10 +181,11 @@ export function DriveTree({
             className="mt-0.5 size-4 accent-[var(--brand)]"
           />
           <span>
-            Bring in new files by themselves
+            Keep what I picked up to date
             <span className="block text-xs text-muted">
-              Lengible checks this link when you open it (every few hours). Newer versions of files you already have are always refreshed; changed
-              timetables and topic lists wait for you to review what changed.
+              Lengible checks this link when you open it (every few hours). Newer versions of files you brought in replace the old ones (processed
+              again if you had processed them), and new files in folders you ticked whole come in by themselves. Changed timetables and topic
+              lists wait for you to review what changed.
             </span>
           </span>
         </label>
@@ -182,7 +195,7 @@ export function DriveTree({
       <div className="flex gap-1 overflow-x-auto text-sm font-medium">
         {(
           [
-            ["todo", `Not in Library yet (${items.filter((i) => ["new", "changed", "error"].includes(i.status)).length})`],
+            ["todo", `Not taken yet (${items.filter((i) => ["new", "changed", "error"].includes(i.status)).length})`],
             ["lib", `In your Library (${items.filter((i) => i.status === "imported").length})`],
             ["skip", `Left out (${items.filter((i) => i.status === "skipped" || i.status === "removed" || !i.include).length})`],
             ["all", `All (${items.length})`],
@@ -374,7 +387,7 @@ export function DriveTree({
           <CircleAlert size={13} className="mt-0.5 shrink-0" /> Files marked “Problem” are tried again when you tap Bring in.
         </p>
       )}
-      {items.length > 0 && items.every((i) => i.status === "imported" || i.status === "skipped" || !i.include) && (
+      {!nothingYet && items.every((i) => i.status === "imported" || i.status === "skipped" || !i.include) && (
         <p className="flex items-center gap-1.5 text-sm text-ok">
           <CheckCircle2 size={16} /> Everything you chose is in your Library.
         </p>

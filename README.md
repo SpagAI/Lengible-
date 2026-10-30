@@ -89,8 +89,10 @@ public/sw.js          service worker (install + offline)
 
 ## Google Drive links (optional)
 
-Library → Google Drive links brings in a folder shared "Anyone with the link" (e.g. your class folder), mirrors its folders, matches
-them to courses, and checks it again every few hours while Lengible is open: new files come in, changed files are refreshed, and
-changed timetables and topic lists show exactly what changed before you apply them. It needs a free Google API key:
+Library → Google Drive links lists everything in a folder shared "Anyone with the link" (e.g. your class folder). Nothing is taken until
+you tick folders or files; then **Bring in only** stores them and **Bring in & process** also reads them (stored files can be processed
+later, per folder or file). Folders are mirrored and matched to courses. The link is checked again every few hours while Lengible is
+open: newer versions of what you picked replace the old ones (processed again if you had processed them), new files in folders you
+ticked whole come in by themselves, and changed timetables and topic lists show exactly what changed before you apply them. It needs a free Google API key:
 console.cloud.google.com → enable **Google Drive API** → Credentials → Create API key (restrict it to Google Drive API) → add
 `GOOGLE_DRIVE_API_KEY` in Vercel and redeploy.

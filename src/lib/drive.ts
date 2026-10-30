@@ -181,6 +181,18 @@ export async function syncItems(supabase: DB, source: DriveSource) {
   ]);
   const leaf = (courses ?? []).filter((c) => !c.is_group);
   const have = new Map(((existing ?? []) as DriveItem[]).map((i) => [i.drive_id, i]));
+  // A new link starts with nothing ticked: you pick what to take in. Later, a new file is ticked by itself
+  // when the nearest folder around it (with files you've seen) was picked whole, so chosen folders stay complete.
+  const readable = ((existing ?? []) as DriveItem[]).filter((i) => i.status !== "skipped" && i.status !== "removed");
+  const pickedFolder = (path: string) => {
+    const parts = path.split("/").filter(Boolean);
+    for (let k = parts.length; k >= 0; k--) {
+      const p = parts.slice(0, k).join("/");
+      const inside = readable.filter((i) => !p || i.path === p || i.path.startsWith(`${p}/`));
+      if (inside.length) return inside.every((i) => i.include);
+    }
+    return false;
+  };
   const seen = new Set<string>();
   const fresh = [];
   let changed = 0;
@@ -210,7 +222,7 @@ export async function syncItems(supabase: DB, source: DriveSource) {
         md5: f.md5,
         course_id: course,
         doc_type: type,
-        include: !why && !(f.size && f.size > MAX_BYTES),
+        include: !why && !(f.size && f.size > MAX_BYTES) && pickedFolder(f.path),
         status: (why ? "skipped" : "new") as DriveItem["status"],
         error: why ?? (f.size && f.size > MAX_BYTES ? `Over the 50 MB limit (${Math.round(f.size / 1e6)} MB).` : null),
       });
