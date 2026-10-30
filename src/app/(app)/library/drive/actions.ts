@@ -68,6 +68,15 @@ export async function setFolderCourse(sourceId: string, path: string, courseId: 
   revalidatePath(`/library/drive/${sourceId}`);
 }
 
+// Tick or untick everything inside a Drive folder (subfolders included); "" means the whole link.
+// Files that can't be read stay unticked.
+export async function setFolderInclude(sourceId: string, path: string, include: boolean) {
+  const { supabase } = await requireUser();
+  let q = supabase.from("drive_items").update({ include }).eq("source_id", sourceId).neq("status", "skipped");
+  if (path) q = q.or(`path.eq.${JSON.stringify(path)},path.like.${JSON.stringify(`${path}/%`)}`);
+  await q;
+}
+
 export async function updateDriveItem(id: string, patch: { include?: boolean; doc_type?: string; course_id?: string | null }) {
   const { supabase } = await requireUser();
   await supabase.from("drive_items").update(patch).eq("id", id);

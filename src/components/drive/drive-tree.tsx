@@ -3,9 +3,9 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, CircleAlert, Download, FileText, Folder, Loader2, RefreshCw, Sparkles } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Download, FileText, Folder, Loader2, RefreshCw, Sparkles } from "lucide-react";
 import type { DriveItem } from "@/lib/supabase/types";
-import { checkDriveLink, setAutoImport, setFolderCourse, updateDriveItem } from "@/app/(app)/library/drive/actions";
+import { checkDriveLink, setAutoImport, setFolderCourse, setFolderInclude, updateDriveItem } from "@/app/(app)/library/drive/actions";
 import { useBackgroundWork } from "@/components/background-work";
 import { docTypes, formatBytes } from "@/lib/library";
 import { Button, Card, cx, inputClass } from "@/components/ui";
@@ -46,12 +46,34 @@ export function DriveTree({ sourceId, items: initial, courses, autoImport }: { s
     setItems((cur) => cur.map((i) => (i.id === id ? { ...i, ...p } : i)));
     void updateDriveItem(id, p as never);
   };
-  const toBring = items.filter((i) => i.include && (i.status === "new" || i.status === "changed" || i.status === "error"));
+  const toBringAll = items.filter((i) => i.include && (i.status === "new" || i.status === "changed" || i.status === "error"));
+  const toBring = toBringAll;
   const running = new Set(jobs.filter((j) => j.driveItemId && ["waiting", "uploading", "reading", "analysing"].includes(j.progress.stage)).map((j) => j.driveItemId));
 
   const shown = items.filter((i) =>
-    filter === "all" ? true : filter === "lib" ? i.status === "imported" : filter === "skip" ? i.status === "skipped" || i.status === "removed" || !i.include : i.include && i.status !== "imported" && i.status !== "skipped" && i.status !== "removed",
+    filter === "all"
+      ? true
+      : filter === "lib"
+        ? i.status === "imported"
+        : filter === "skip"
+          ? i.status === "skipped" || i.status === "removed" || !i.include
+          : i.status === "new" || i.status === "changed" || i.status === "error",
   );
+  // Folders you've folded away.
+  const [closed, setClosed] = useState<Set<string>>(new Set());
+  const hidden = (path: string) => [...closed].some((c) => path === c || path.startsWith(`${c}/`));
+  // Tick state of a folder ("" = the whole link): all, some or none of the files that can be read.
+  const within = (path: string) => items.filter((i) => i.status !== "skipped" && (!path || i.path === path || i.path.startsWith(`${path}/`)));
+  const tickState = (path: string) => {
+    const list = within(path);
+    const on = list.filter((i) => i.include).length;
+    return { state: on === 0 ? "none" : on === list.length ? "all" : "some", on, total: list.length } as const;
+  };
+  const tickFolder = (path: string) => {
+    const include = tickState(path).state !== "all";
+    setItems((cur) => cur.map((i) => (i.status !== "skipped" && (!path || i.path === path || i.path.startsWith(`${path}/`)) ? { ...i, include } : i)));
+    void setFolderInclude(sourceId, path, include);
+  };
   // Folder tree: every folder path, with the files directly inside it.
   const folders = (() => {
     const paths = new Set<string>([""]);
@@ -118,7 +140,7 @@ export function DriveTree({ sourceId, items: initial, courses, autoImport }: { s
       <div className="flex gap-1 overflow-x-auto text-sm font-medium">
         {(
           [
-            ["todo", `To bring in (${items.filter((i) => i.include && !["imported", "skipped", "removed"].includes(i.status)).length})`],
+            ["todo", `Not in Library yet (${items.filter((i) => ["new", "changed", "error"].includes(i.status)).length})`],
             ["lib", `In your Library (${items.filter((i) => i.status === "imported").length})`],
             ["skip", `Left out (${items.filter((i) => i.status === "skipped" || i.status === "removed" || !i.include).length})`],
             ["all", `All (${items.length})`],
@@ -134,16 +156,82 @@ export function DriveTree({ sourceId, items: initial, courses, autoImport }: { s
         <p className="text-sm text-muted">Nothing here.</p>
       ) : (
         <Card className="divide-y divide-border p-0">
+          {(() => {
+            const t = tickState("");
+            return (
+              <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 text-sm">
+                <input
+                  type="checkbox"
+                  checked={t.state === "all"}
+                  ref={(el) => {
+                    if (el) el.indeterminate = t.state === "some";
+                  }}
+                  onChange={() => tickFolder("")}
+                  className="size-4 shrink-0 accent-[var(--brand)]"
+                  aria-label="Tick or untick everything"
+                />
+                <span className="flex-1 font-medium">
+                  {t.state === "all" ? "Everything ticked" : t.state === "none" ? "Nothing ticked" : `${t.on} of ${t.total} files ticked`}
+                </span>
+                <button type="button" onClick={() => tickFolder("")} className="text-xs text-brand underline">
+                  {t.state === "all" ? "Select none" : "Select all"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setClosed(closed.size ? new Set() : new Set(folders.filter((f) => f && !f.includes("/"))))}
+                  className="text-xs text-brand underline"
+                >
+                  {closed.size ? "Expand all" : "Collapse all"}
+                </button>
+              </div>
+            );
+          })()}
           {folders.map((path) => {
-            const files = shown.filter((i) => i.path === path);
+            if (path && hidden(path.split("/").slice(0, -1).join("/"))) return null;
+            const files = hidden(path) ? [] : shown.filter((i) => i.path === path);
             const depth = path ? path.split("/").length : 0;
             const c = courseOfFolder(path);
             return (
               <div key={path || "top"}>
                 {path && (
-                  <div className="flex flex-wrap items-center gap-2 bg-surface-2/50 px-4 py-2" style={{ paddingLeft: 16 + (depth - 1) * 14 }}>
+                  <div className="flex flex-wrap items-center gap-2 bg-surface-2/50 px-4 py-2" style={{ paddingLeft: 8 + (depth - 1) * 14 }}>
+                    <button
+                      type="button"
+                      onClick={() => setClosed((cur) => {
+                        const next = new Set(cur);
+                        if (next.has(path)) next.delete(path);
+                        else next.add(path);
+                        return next;
+                      })}
+                      className="grid size-6 shrink-0 place-items-center rounded text-muted hover:bg-surface"
+                      aria-label={closed.has(path) ? `Open ${path}` : `Fold ${path}`}
+                      aria-expanded={!closed.has(path)}
+                    >
+                      {closed.has(path) ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
+                    </button>
+                    {(() => {
+                      const t = tickState(path);
+                      return (
+                        <input
+                          type="checkbox"
+                          checked={t.state === "all"}
+                          disabled={!t.total}
+                          ref={(el) => {
+                            if (el) el.indeterminate = t.state === "some";
+                          }}
+                          onChange={() => tickFolder(path)}
+                          className="size-4 shrink-0 accent-[var(--brand)]"
+                          aria-label={`Tick everything in ${path}`}
+                        />
+                      );
+                    })()}
                     <Folder size={16} className="shrink-0 text-brand" />
-                    <span className="min-w-0 flex-1 truncate text-sm font-medium">{path.split("/").at(-1)}</span>
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                      {path.split("/").at(-1)}
+                      <span className="ml-1.5 text-xs font-normal text-muted">
+                        {tickState(path).on}/{tickState(path).total}
+                      </span>
+                    </span>
                     <select
                       value={c === "mixed" ? "mixed" : c}
                       onChange={async (e) => {
@@ -151,7 +239,7 @@ export function DriveTree({ sourceId, items: initial, courses, autoImport }: { s
                         setItems((cur) => cur.map((i) => (i.path === path || i.path.startsWith(`${path}/`) ? { ...i, course_id: v } : i)));
                         await setFolderCourse(sourceId, path, v);
                       }}
-                      className={cx(inputClass, "min-h-8 w-auto max-w-[55%] py-0 text-xs")}
+                      className={cx(inputClass, "ml-14 min-h-8 basis-full py-0 text-xs sm:ml-0 sm:w-auto sm:max-w-[45%] sm:basis-auto")}
                       aria-label={`Course for ${path}`}
                     >
                       {c === "mixed" && <option value="mixed">Several courses</option>}
@@ -199,7 +287,7 @@ export function DriveTree({ sourceId, items: initial, courses, autoImport }: { s
                       <select
                         value={i.doc_type}
                         onChange={(e) => patch(i.id, { doc_type: e.target.value })}
-                        className={cx(inputClass, "min-h-8 w-32 py-0 text-xs")}
+                        className={cx(inputClass, "ml-12 min-h-8 basis-full py-0 text-xs sm:ml-0 sm:w-32 sm:basis-auto")}
                         aria-label={`Type of ${i.name}`}
                       >
                         {docTypes.map((d) => (
