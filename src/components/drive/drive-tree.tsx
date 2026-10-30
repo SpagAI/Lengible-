@@ -79,12 +79,20 @@ export function DriveTree({
           ? i.status === "skipped" || i.status === "removed" || !i.include
           : i.status === "new" || i.status === "changed" || i.status === "error",
   );
-  // Folders you've folded away.
-  // A big link opens with its top folders folded, so the page stays quick.
-  const [closed, setClosed] = useState<Set<string>>(() =>
-    initial.length > 300 ? new Set(initial.flatMap((i) => (i.path ? [i.path.split("/")[0]] : []))) : new Set(),
-  );
-  const hidden = (path: string) => [...closed].some((c) => path === c || path.startsWith(`${c}/`));
+  // Folders you've opened. Every folder starts closed, and opening one shows its subfolders closed too.
+  const [opened, setOpened] = useState<Set<string>>(new Set());
+  const toggleFolder = (path: string) =>
+    setOpened((cur) => {
+      const next = new Set(cur);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  // A folder's contents are hidden unless it and every folder above it are open ("" is the top level, always open).
+  const hidden = (path: string) => {
+    const parts = path.split("/").filter(Boolean);
+    return parts.some((_, k) => !opened.has(parts.slice(0, k + 1).join("/")));
+  };
   // Tick state of a folder ("" = the whole link): all, some or none of the files that can be read.
   const within = (path: string) => items.filter((i) => i.status !== "skipped" && (!path || i.path === path || i.path.startsWith(`${path}/`)));
   const tickState = (path: string) => {
@@ -236,10 +244,10 @@ export function DriveTree({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setClosed(closed.size ? new Set() : new Set(folders.filter((f) => f && !f.includes("/"))))}
+                  onClick={() => setOpened(opened.size ? new Set() : new Set(folders.filter(Boolean)))}
                   className="text-xs text-brand underline"
                 >
-                  {closed.size ? "Expand all" : "Collapse all"}
+                  {opened.size ? "Collapse all" : "Expand all"}
                 </button>
               </div>
             );
@@ -255,17 +263,12 @@ export function DriveTree({
                   <div className="flex flex-wrap items-center gap-2 bg-surface-2/50 px-4 py-2" style={{ paddingLeft: 8 + (depth - 1) * 14 }}>
                     <button
                       type="button"
-                      onClick={() => setClosed((cur) => {
-                        const next = new Set(cur);
-                        if (next.has(path)) next.delete(path);
-                        else next.add(path);
-                        return next;
-                      })}
+                      onClick={() => toggleFolder(path)}
                       className="grid size-6 shrink-0 place-items-center rounded text-muted hover:bg-surface"
-                      aria-label={closed.has(path) ? `Open ${path}` : `Fold ${path}`}
-                      aria-expanded={!closed.has(path)}
+                      aria-label={opened.has(path) ? `Fold ${path}` : `Open ${path}`}
+                      aria-expanded={opened.has(path)}
                     >
-                      {closed.has(path) ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
+                      {opened.has(path) ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
                     </button>
                     {(() => {
                       const t = tickState(path);
@@ -284,12 +287,18 @@ export function DriveTree({
                       );
                     })()}
                     <Folder size={16} className="shrink-0 text-brand" />
-                    <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                    <button
+                      type="button"
+                      onClick={() => toggleFolder(path)}
+                      className="min-w-0 flex-1 truncate text-left text-sm font-medium"
+                      aria-hidden
+                      tabIndex={-1}
+                    >
                       {path.split("/").at(-1)}
                       <span className="ml-1.5 text-xs font-normal text-muted">
                         {tickState(path).on}/{tickState(path).total}
                       </span>
-                    </span>
+                    </button>
                     {storedIn(path).length > 0 && (
                       <button
                         type="button"
