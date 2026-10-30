@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/supabase/server";
-import { DriveError, getMeta, MAX_FILES, parseDriveLink, syncItems } from "@/lib/drive";
+import { blockedNote, DriveError, getMeta, MAX_FILES, parseDriveLink, syncItems } from "@/lib/drive";
 import { isMissingTable } from "@/lib/drugs";
 import type { DriveSource } from "@/lib/supabase/types";
 
@@ -17,6 +17,7 @@ export async function addDriveLink(_prev: { error?: string } | undefined, fd: Fo
   const parsed = parseDriveLink(link);
   if (!parsed) return { error: "That doesn't look like a Google Drive link. Copy the link from Drive's Share → Copy link." };
   let sourceId: string;
+  let blocked: string[] = [];
   try {
     const meta = await getMeta(parsed.id, parsed.resourceKey);
     const isFolder = meta.mimeType === "application/vnd.google-apps.folder";
@@ -33,12 +34,12 @@ export async function addDriveLink(_prev: { error?: string } | undefined, fd: Fo
       sourceId = data.id;
     }
     const { data: source } = await supabase.from("drive_sources").select("*").eq("id", sourceId).single();
-    await syncItems(supabase, source as DriveSource);
+    ({ blocked } = await syncItems(supabase, source as DriveSource));
   } catch (e) {
     return { error: problem(e) };
   }
   revalidatePath("/library", "layout");
-  redirect(`/library/drive/${sourceId}`);
+  redirect(`/library/drive/${sourceId}${blocked.length ? `?blocked=${encodeURIComponent(blocked.join("\n"))}` : ""}`);
 }
 
 export async function checkDriveLink(id: string) {
@@ -54,7 +55,7 @@ export async function checkDriveLink(id: string) {
         ? [r.added && `${r.added} new`, r.changed && `${r.changed} changed`, r.removed && `${r.removed} no longer in the link`].filter(Boolean).join(" · ")
         : "No changes since last check.";
     return {
-      message: `${found} ${what}${r.truncated ? ` This link is very big: only the first ${MAX_FILES.toLocaleString()} files are listed. Add its subfolders as separate links to see the rest.` : ""}`,
+      message: `${found} ${what}${r.blocked.length ? ` ${blockedNote(r.blocked)}` : ""}${r.truncated ? ` This link is very big: only the first ${MAX_FILES.toLocaleString()} files are listed. Add its subfolders as separate links to see the rest.` : ""}`,
     };
   } catch (e) {
     return { error: problem(e) };

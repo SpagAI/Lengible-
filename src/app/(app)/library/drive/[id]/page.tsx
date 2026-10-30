@@ -8,15 +8,17 @@ import { removeDriveLink } from "../actions";
 import { PageHeader } from "@/components/ui";
 import { ConfirmButton } from "@/components/confirm-button";
 import { DriveTree } from "@/components/drive/drive-tree";
-import { allDriveItems } from "@/lib/drive";
+import { allDriveItems, blockedNote } from "@/lib/drive";
 import type { DriveSource } from "@/lib/supabase/types";
 
 export const metadata: Metadata = { title: "Drive link" };
 // "Check for changes" lists the whole shared folder again.
 export const maxDuration = 300;
 
-export default async function DriveSourcePage({ params }: PageProps<"/library/drive/[id]">) {
+export default async function DriveSourcePage({ params, searchParams }: PageProps<"/library/drive/[id]">) {
   const { id } = await params;
+  const sp = await searchParams;
+  const blocked = typeof sp.blocked === "string" ? sp.blocked.split("\n").filter(Boolean) : [];
   const { supabase } = await requireUser();
   const { data } = await supabase.from("drive_sources").select("*").eq("id", id).maybeSingle();
   if (!data) notFound();
@@ -45,6 +47,11 @@ export default async function DriveSourcePage({ params }: PageProps<"/library/dr
           </a>
         }
       />
+      {blocked.length > 0 && (
+        <p className="mb-4 rounded-xl bg-warn/10 p-3 text-sm text-warn">
+          {blockedNote(blocked)} Ask your class rep to share them, or add them as their own links if they have their own shared link.
+        </p>
+      )}
       <DriveTree
         sourceId={id}
         items={items}

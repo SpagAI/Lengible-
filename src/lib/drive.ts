@@ -21,6 +21,13 @@ export class DriveError extends Error {
   }
 }
 
+export const NOT_PUBLIC =
+  "Google won't let Lengible open this folder: it isn't shared as “Anyone with the link can view”. It's probably shared only with your Google account (that's why you can see it in Drive). Ask your class rep to set General access → Anyone with the link → Viewer, or add the subfolders that are shared that way.";
+
+// Plain words for subfolders Google wouldn't open with the link.
+export const blockedNote = (paths: string[]) =>
+  `${paths.length} subfolder${paths.length === 1 ? "" : "s"} couldn't be opened because ${paths.length === 1 ? "it isn't" : "they aren't"} shared “Anyone with the link”: ${paths.slice(0, 6).join(", ")}${paths.length > 6 ? ` and ${paths.length - 6} more` : ""}. Their files aren't listed.`;
+
 const FOLDER = "application/vnd.google-apps.folder";
 const SHORTCUT = "application/vnd.google-apps.shortcut";
 // Google Docs/Slides are brought in as PDF.
@@ -85,6 +92,10 @@ async function call(path: string, params: Record<string, string>, resourceKeys: 
   if (/accessNotConfigured|SERVICE_DISABLED/i.test(reason) || /has not been used|is disabled/i.test(message)) {
     throw new DriveError("The Google Drive API isn't switched on for your API key's Google Cloud project yet. Follow the setup steps on this page, then try again.", "setup");
   }
+  // The file or folder exists but isn't shared "Anyone with the link" (e.g. only with your own Google account).
+  if (/insufficientFilePermissions|insufficientPermissions/i.test(reason) || /sufficient permissions/i.test(message)) {
+    throw new DriveError(NOT_PUBLIC, "not_shared");
+  }
   if (/keyInvalid|API_KEY_INVALID|API_KEY_SERVICE_BLOCKED|API_KEY_HTTP_REFERRER_BLOCKED|forbidden/i.test(reason) || /API key/i.test(message)) {
     throw new DriveError("Your Google API key can't use Google Drive (it may be restricted to other services). Follow the setup steps on this page to make a Drive key.", "setup");
   }
@@ -145,6 +156,8 @@ export async function listFolder(id: string, resourceKey: string | null) {
   let level = [{ id, path: "" }];
   let folders = 0;
   let truncated = false;
+  // Subfolders that aren't shared "Anyone with the link": skipped (and named) instead of failing the whole link.
+  const blocked: string[] = [];
   // A "/" inside a folder name would look like a subfolder.
   const clean = (name: string) => name.replace(/\//g, "∕").trim() || "Untitled folder";
   const listBatch = async (batch: { id: string; path: string }[]) => {
@@ -193,13 +206,28 @@ export async function listFolder(id: string, resourceKey: string | null) {
     } while (pageToken);
     return next;
   };
+  // One private folder makes Google refuse the whole request: halve the batch until it's found.
+  const listOpen = async (batch: { id: string; path: string }[]): Promise<{ id: string; path: string }[]> => {
+    try {
+      return await listBatch(batch);
+    } catch (e) {
+      if (!(e instanceof DriveError && e.kind === "not_shared")) throw e;
+      if (batch.length === 1) {
+        if (!batch[0].path) throw e;
+        blocked.push(batch[0].path);
+        return [];
+      }
+      const half = Math.ceil(batch.length / 2);
+      return [...(await listOpen(batch.slice(0, half))), ...(await listOpen(batch.slice(half)))];
+    }
+  };
   for (let depth = 0; level.length && depth <= MAX_DEPTH; depth++) {
     folders += level.length;
     const batches: { id: string; path: string }[][] = [];
     for (let k = 0; k < level.length; k += BATCH) batches.push(level.slice(k, k + BATCH));
     const next: { id: string; path: string }[] = [];
     for (let k = 0; k < batches.length; k += PARALLEL) {
-      for (const found of await Promise.all(batches.slice(k, k + PARALLEL).map(listBatch))) next.push(...found);
+      for (const found of await Promise.all(batches.slice(k, k + PARALLEL).map(listOpen))) next.push(...found);
     }
     level = next;
   }
@@ -220,7 +248,7 @@ export async function listFolder(id: string, resourceKey: string | null) {
   }
   // Same order as Drive shows: by folder, then name.
   out.sort((a, b) => a.path.localeCompare(b.path) || a.name.localeCompare(b.name));
-  return { files: out, folders, truncated };
+  return { files: out, folders, truncated, blocked: blocked.sort() };
 }
 
 // Downloads a file (Google Docs/Slides as PDF), refusing anything over the 50 MB storage limit.
@@ -252,7 +280,8 @@ export async function syncItems(supabase: DB, source: DriveSource) {
   let files: ListedFile[];
   let folders = 0;
   let truncated = false;
-  if (source.is_folder) ({ files, folders, truncated } = await listFolder(source.drive_id, source.resource_key));
+  let blocked: string[] = [];
+  if (source.is_folder) ({ files, folders, truncated, blocked } = await listFolder(source.drive_id, source.resource_key));
   else {
     const m = await getMeta(source.drive_id, source.resource_key);
     files = [{ id: m.id, resourceKey: m.resourceKey ?? source.resource_key, name: m.name, mime: m.mimeType, path: "", size: m.size ? Number(m.size) : null, modified: m.modifiedTime ?? null, md5: m.md5Checksum ?? null }];
@@ -333,8 +362,9 @@ export async function syncItems(supabase: DB, source: DriveSource) {
     if (error) throw new Error(`Couldn't save the file list: ${error.message}`);
   }
   // When the listing stopped early, files not reached aren't gone from Drive.
-  const gone = truncated ? [] : [...have.values()].filter((i) => !seen.has(i.drive_id) && i.status !== "removed");
+  // (Nor are files inside folders Google wouldn't open this time.)
+  const gone = truncated ? [] : [...have.values()].filter((i) => !seen.has(i.drive_id) && i.status !== "removed" && !blocked.some((b) => i.path === b || i.path.startsWith(`${b}/`)));
   if (gone.length) await supabase.from("drive_items").update({ status: "removed" }).in("id", gone.map((i) => i.id));
   await supabase.from("drive_sources").update({ last_checked_at: new Date().toISOString() }).eq("id", source.id);
-  return { added: fresh.filter((f) => f.status === "new").length, changed, removed: gone.length, total: files.length, folders, truncated };
+  return { added: fresh.filter((f) => f.status === "new").length, changed, removed: gone.length, total: files.length, folders, truncated, blocked };
 }
