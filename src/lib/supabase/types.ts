@@ -352,6 +352,44 @@ export type FlashcardDay = { user_id: string; day: string; reviews: number; done
 
 export type DeckCount = { deck_id: string; total: number; due_now: number; new_count: number; suspended: number };
 
+export type DriveSource = {
+  id: string;
+  user_id: string;
+  link: string;
+  drive_id: string;
+  resource_key: string | null;
+  name: string;
+  is_folder: boolean;
+  auto_import: boolean;
+  last_checked_at: string | null;
+  created_at: string;
+};
+
+export type DriveItemStatus = "new" | "imported" | "changed" | "skipped" | "error" | "removed";
+
+export type DriveItem = {
+  id: string;
+  user_id: string;
+  source_id: string;
+  drive_id: string;
+  resource_key: string | null;
+  name: string;
+  mime: string;
+  path: string;
+  size_bytes: number | null;
+  modified_time: string | null;
+  md5: string | null;
+  course_id: string | null;
+  doc_type: string;
+  include: boolean;
+  status: DriveItemStatus;
+  error: string | null;
+  file_id: string | null;
+  imported_modified: string | null;
+  claimed_at: string | null;
+  created_at: string;
+};
+
 export type Database = {
   public: {
     Tables: {
@@ -360,6 +398,11 @@ export type Database = {
       course_exams: Table<CourseExam, "id" | "user_id" | "label" | "kind" | "block_id" | "start_time" | "venue" | "confirmed" | "source_file_id" | "created_at">;
       lecturers: Table<Lecturer, "id" | "user_id" | "notes" | "created_at">;
       topics: Table<Topic, "id" | "user_id" | "parent_id" | "sort_order" | "block_id" | "session_type" | "lecturer_id" | "source" | "created_at">;
+      drive_sources: Table<DriveSource, "id" | "user_id" | "resource_key" | "is_folder" | "auto_import" | "last_checked_at" | "created_at">;
+      drive_items: Table<
+        DriveItem,
+        "id" | "user_id" | "resource_key" | "path" | "size_bytes" | "modified_time" | "md5" | "course_id" | "doc_type" | "include" | "status" | "error" | "file_id" | "imported_modified" | "claimed_at" | "created_at"
+      >;
       topic_files: Table<TopicFile, "user_id" | "start_page" | "end_page" | "subtopics" | "key_points" | "created_at">;
       blocks: Table<Block, "id" | "user_id" | "start_date" | "end_date" | "created_at">;
       folders: Table<Folder, "id" | "user_id" | "course_id" | "parent_id" | "created_at">;

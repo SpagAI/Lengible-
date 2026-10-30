@@ -8,6 +8,7 @@ import { matchCourse, normalizeBlock, normalizeTime, examKindFrom } from "@/lib/
 import type { Analysis } from "@/lib/analysis/run";
 import { daysUntil, formatDate, resolveDate } from "@/lib/dates";
 import { importTimetable, importTopics } from "./actions";
+import { diffSessions, diffTopics, type OldSession, type OldTopic, type SessionChange } from "@/lib/analysis/diff";
 import { PageHeader, Card, Button, inputClass, cx, EmptyState } from "@/components/ui";
 
 export const metadata: Metadata = { title: "Review import" };
@@ -28,7 +29,7 @@ export default async function ReviewPage({ params, searchParams }: PageProps<"/l
   const done = typeof sp.done === "string" ? sp.done : null;
 
   if (done || analysis?.importedAt) {
-    const [a, b] = (done ?? "").split("-");
+    const [a, b, c] = (done ?? "").split("-");
     return (
       <>
         <PageHeader title="Imported" subtitle={file.name} />
@@ -40,7 +41,7 @@ export default async function ReviewPage({ params, searchParams }: PageProps<"/l
                 ? `${a} sessions and ${b} exams/EOPTs added.`
                 : "This timetable has been imported."
               : done
-                ? `${a} topics added.`
+                ? `${a} topics in your courses${Number(b) ? `, ${b} corrected` : ""}${Number(c) ? `, ${c} removed` : ""}.`
                 : "This topic list has been imported."}
           </p>
           <p className="text-muted">
@@ -76,12 +77,35 @@ export default async function ReviewPage({ params, searchParams }: PageProps<"/l
   if (file.doc_type === "timetable" && analysis.sessions) {
     const sessions = analysis.sessions.map((s, i) => ({ ...s, i, date: fixDate(s.date) }));
     const assessments = sessions.filter((s) => s.type === "assessment");
+    // A newer version of a timetable you imported before: what changed.
+    const [{ data: oldRows }, { data: oldExams }] = await Promise.all([
+      supabase.from("schedule_sessions").select("id, course_id, session_date, start_time, end_time, title, venue, lecturer, topic_id").eq("source_file_id", id),
+      supabase.from("course_exams").select("course_id, label, exam_date, start_time").eq("source_file_id", id),
+    ]);
+    const diff = oldRows?.length
+      ? diffSessions(
+          sessions
+            .filter((s) => s.type !== "assessment")
+            .map((s) => ({ i: s.i, courseId: matchCourse(s.course, courses), date: s.date, start: normalizeTime(s.start_time), end: normalizeTime(s.end_time), title: s.title.trim(), venue: s.venue, lecturer: s.lecturer })),
+          oldRows as OldSession[],
+        )
+      : null;
+    const changeOf = new Map((diff?.changes ?? []).map((c) => [c.i, c]));
+    const examChanges = (oldExams ?? []).length
+      ? assessments.flatMap((s) => {
+          const was = (oldExams ?? []).find((e) => e.course_id === matchCourse(s.course, courses) && e.exam_date !== s.date);
+          const same = (oldExams ?? []).find((e) => e.course_id === matchCourse(s.course, courses) && e.exam_date === s.date);
+          return was && !same && s.date ? [`${s.course}: ${s.title} moved ${formatDate(was.exam_date, { day: "numeric", month: "short" })} → ${formatDate(s.date, { day: "numeric", month: "short" })}`] : [];
+        })
+      : [];
     const dates = sessions.map((s) => s.date).filter(Boolean).sort() as string[];
     return (
       <>
         <PageHeader title="Review timetable" subtitle={`${file.name} · ${sessions.length} sessions found${dates.length ? ` · ${formatDate(dates[0])} – ${formatDate(dates.at(-1)!)}` : ""}`} />
         <form action={importTimetable} className="space-y-4">
           <input type="hidden" name="file_id" value={id} />
+
+          {diff && <TimetableChanges changes={diff.changes} removed={diff.removed} examChanges={examChanges} sessions={sessions} courseName={(cid) => courses.find((c) => c.id === cid)?.name ?? ""} />}
 
           <Card className="space-y-3">
             <h2 className="font-semibold">Block / posting</h2>
@@ -136,6 +160,7 @@ export default async function ReviewPage({ params, searchParams }: PageProps<"/l
                   <ul className="mt-2 max-h-72 space-y-1 overflow-auto text-xs">
                     {list.map((s) => (
                       <li key={s.i} className="flex gap-2">
+                        {diff && <ChangeChip c={changeOf.get(s.i)} />}
                         <span className="w-24 shrink-0 text-muted">
                           {s.date ? formatDate(s.date, { day: "numeric", month: "short" }) : "?"} {normalizeTime(s.start_time) ?? ""}
                         </span>
@@ -159,10 +184,16 @@ export default async function ReviewPage({ params, searchParams }: PageProps<"/l
             <label className="flex items-center gap-2">
               <input type="checkbox" name="opt_lecturers" defaultChecked className="size-5 accent-[var(--brand)]" /> Add lecturers (from lectures) and link them to their topics
             </label>
+            {diff && (
+              <label className="flex items-center gap-2">
+                <input type="checkbox" name="opt_rename" defaultChecked className="size-5 accent-[var(--brand)]" /> Rename topics whose session title was corrected
+                (keeps their files, quizzes and flashcards)
+              </label>
+            )}
           </Card>
 
           <Button type="submit" className="w-full sm:w-auto">
-            Import into my courses
+            {diff ? "Apply these changes" : "Import into my courses"}
           </Button>
         </form>
       </>
@@ -170,11 +201,35 @@ export default async function ReviewPage({ params, searchParams }: PageProps<"/l
   }
 
   const topics = (analysis.topics ?? []).map((t, i) => ({ ...t, i }));
+  // Compare with the topics already in your courses: new ones, corrections, and ones no longer listed.
+  const { data: existingTopics } = await supabase.from("topics").select("id, course_id, name, source").neq("session_type", "section").limit(3000);
+  const tdiff = diffTopics(
+    topics.map((t) => ({ i: t.i, courseId: matchCourse(t.course, courses), name: t.name.trim() })),
+    (existingTopics ?? []) as OldTopic[],
+  );
+  const tchange = new Map(tdiff.changes.map((c) => [c.i, c]));
+  const counts = { new: tdiff.changes.filter((c) => c.kind === "new").length, renamed: tdiff.changes.filter((c) => c.kind === "renamed").length };
   return (
     <>
       <PageHeader title="Review topic list" subtitle={`${file.name} · ${topics.length} topics found`} />
       <form action={importTopics} className="space-y-4">
         <input type="hidden" name="file_id" value={id} />
+        {(existingTopics ?? []).length > 0 && (
+          <Card className="space-y-2 border-brand/40 text-sm">
+            <h2 className="font-semibold">Compared with your courses</h2>
+            <p>
+              <b>{counts.new}</b> new · <b>{counts.renamed}</b> corrected or renamed · <b>{topics.length - counts.new - counts.renamed}</b> already in your
+              courses
+              {tdiff.missing.length ? (
+                <>
+                  {" "}
+                  · <b>{tdiff.missing.length}</b> no longer in this list
+                </>
+              ) : null}
+            </p>
+            <p className="text-xs text-muted">Corrections rename the topic you already have, so its files, quiz results and flashcards stay linked.</p>
+          </Card>
+        )}
         {labels.map((label) => {
           const list = topics.filter((t) => t.course === label);
           const blocks = [...new Set(list.map((t) => normalizeBlock(t.block) ?? "No block"))];
@@ -198,8 +253,17 @@ export default async function ReviewPage({ params, searchParams }: PageProps<"/l
                             <input type="checkbox" name={`topic:${t.i}`} defaultChecked className="mt-0.5 size-4 shrink-0 accent-[var(--brand)]" />
                             <span>
                               {t.name} <span className="text-xs text-muted">· {t.type}</span>
+                              {tchange.get(t.i)?.kind === "new" && (existingTopics ?? []).length > 0 && (
+                                <span className="ml-1.5 rounded bg-brand-soft px-1.5 text-[11px] text-brand-strong">new</span>
+                              )}
                             </span>
                           </label>
+                          {tchange.get(t.i)?.kind === "renamed" && (
+                            <label className="mt-0.5 ml-6 flex items-start gap-2 text-xs text-warn">
+                              <input type="checkbox" name={`rename:${t.i}`} value={tchange.get(t.i)!.old!.id} defaultChecked className="mt-0.5 size-3.5 shrink-0 accent-[var(--brand)]" />
+                              <span>Correction of “{tchange.get(t.i)!.old!.name}”: rename it</span>
+                            </label>
+                          )}
                         </li>
                       ))}
                   </ul>
@@ -208,6 +272,24 @@ export default async function ReviewPage({ params, searchParams }: PageProps<"/l
             </Card>
           );
         })}
+        {tdiff.missing.length > 0 && (
+          <Card className="space-y-2">
+            <h2 className="font-semibold">In your courses but not in this list</h2>
+            <p className="text-sm text-muted">Maybe dropped or merged. They stay unless you tick them (ticking deletes the topic; its files stay in your Library).</p>
+            <ul className="space-y-1">
+              {tdiff.missing.map((m) => (
+                <li key={m.id}>
+                  <label className="flex items-start gap-2 text-sm">
+                    <input type="checkbox" name="remove" value={m.id} className="mt-0.5 size-4 shrink-0 accent-[var(--brand)]" />
+                    <span>
+                      {m.name} <span className="text-xs text-muted">· {courses.find((c) => c.id === m.course_id)?.name}</span>
+                    </span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        )}
         <Button type="submit" className="w-full sm:w-auto">
           Import topics
         </Button>
@@ -227,5 +309,67 @@ function MapSelect({ label, courses }: { label: string; courses: { id: string; n
         </option>
       ))}
     </select>
+  );
+}
+
+const changeStyle: Record<SessionChange["kind"], { label: string; cls: string }> = {
+  same: { label: "", cls: "" },
+  new: { label: "new", cls: "bg-brand-soft text-brand-strong" },
+  changed: { label: "changed", cls: "bg-warn/15 text-warn" },
+  moved: { label: "moved", cls: "bg-warn/15 text-warn" },
+  renamed: { label: "renamed", cls: "bg-warn/15 text-warn" },
+};
+
+function ChangeChip({ c }: { c?: SessionChange }) {
+  if (!c || c.kind === "same") return <span className="w-14 shrink-0" />;
+  return <span className={cx("w-14 shrink-0 rounded px-1 text-center text-[10px] font-semibold", changeStyle[c.kind].cls)}>{changeStyle[c.kind].label}</span>;
+}
+
+// "What changed since your last import" for a newer version of a timetable.
+function TimetableChanges({
+  changes,
+  removed,
+  examChanges,
+  sessions,
+  courseName,
+}: {
+  changes: SessionChange[];
+  removed: OldSession[];
+  examChanges: string[];
+  sessions: { i: number; title: string; date: string | null; course: string }[];
+  courseName: (id: string) => string;
+}) {
+  const by = (k: SessionChange["kind"]) => changes.filter((c) => c.kind === k);
+  const title = (i: number) => sessions.find((s) => s.i === i);
+  const d = (x: string | null | undefined) => (x ? formatDate(x, { weekday: "short", day: "numeric", month: "short" }) : "?");
+  const lists: { label: string; items: string[] }[] = [
+    { label: "Exams / EOPTs moved", items: examChanges },
+    { label: "Moved to another day", items: by("moved").map((c) => `${title(c.i)?.title} · ${"what" in c ? c.what.join("; ") : ""}`) },
+    { label: "Time, venue or lecturer changed", items: by("changed").map((c) => `${d(title(c.i)?.date)} · ${title(c.i)?.title} · ${"what" in c ? c.what.join("; ") : ""}`) },
+    { label: "Title corrected", items: by("renamed").map((c) => `${d(title(c.i)?.date)} · ${"what" in c ? c.what.join("; ") : ""}`) },
+    { label: "New sessions", items: by("new").map((c) => `${d(title(c.i)?.date)} · ${title(c.i)?.course} · ${title(c.i)?.title}`) },
+    { label: "No longer in the timetable", items: removed.map((r) => `${d(r.session_date)} · ${courseName(r.course_id)} · ${r.title}`) },
+  ].filter((l) => l.items.length);
+  return (
+    <Card className="space-y-3 border-brand/40">
+      <h2 className="font-semibold">What changed since your last import</h2>
+      {lists.length ? (
+        lists.map((l) => (
+          <details key={l.label} open={l.items.length <= 6} className="text-sm">
+            <summary className="cursor-pointer font-medium">
+              {l.label} ({l.items.length})
+            </summary>
+            <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs">
+              {l.items.slice(0, 60).map((x, k) => (
+                <li key={k}>{x}</li>
+              ))}
+            </ul>
+          </details>
+        ))
+      ) : (
+        <p className="text-sm text-muted">Nothing changed in the sessions.</p>
+      )}
+      <p className="text-xs text-muted">Applying replaces this timetable&apos;s sessions with the new version; your countdowns and course pages update.</p>
+    </Card>
   );
 }

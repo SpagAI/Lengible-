@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ChevronRight, FolderOpen, Network } from "lucide-react";
+import { HardDriveDownload, ChevronRight, FolderOpen, Network } from "lucide-react";
 import { requireUser } from "@/lib/supabase/server";
 import { courseTree, getCourses } from "@/lib/courses";
 import { PageHeader, Card, EmptyState, colorFor, cx } from "@/components/ui";
@@ -53,6 +53,17 @@ export default async function LibraryPage() {
           </div>
         ))}
       </Card>
+
+      <Link href="/library/drive" className="mt-4 block">
+        <Card className="flex items-center gap-3 hover:bg-surface-2">
+          <HardDriveDownload size={22} className="text-brand" />
+          <span className="flex-1">
+            <span className="block font-medium">Google Drive links</span>
+            <span className="block text-sm text-muted">Bring in a shared class folder; new and changed files follow automatically</span>
+          </span>
+          <ChevronRight size={18} className="text-muted" />
+        </Card>
+      </Link>
 
       <Link href="/library/index" className="mt-4 block">
         <Card className="flex items-center gap-3 hover:bg-surface-2">

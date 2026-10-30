@@ -7,6 +7,7 @@ import type { Analysis } from "@/lib/analysis/run";
 import { examKindFrom, normalizeBlock, normalizeTime, splitLecturers } from "@/lib/analysis/match";
 import { resolveDate } from "@/lib/dates";
 import type { SessionType } from "@/lib/supabase/types";
+import { diffSessions, normName, type OldSession } from "@/lib/analysis/diff";
 
 type DB = Awaited<ReturnType<typeof requireUser>>["supabase"];
 
@@ -32,11 +33,12 @@ async function findOrCreateBlock(supabase: DB, name: string | null, start?: stri
 }
 
 // Topics are unique per course, name and type; returns a lookup that creates missing ones.
+// Names match loosely ("&" = "and", punctuation and case ignored), so a re-import never duplicates a topic.
 async function topicFinder(supabase: DB) {
   const { data } = await supabase.from("topics").select("id, course_id, name, session_type, block_id, lecturer_id");
-  const map = new Map((data ?? []).map((t) => [`${t.course_id}|${t.name.toLowerCase()}|${t.session_type}`, t]));
+  const map = new Map((data ?? []).map((t) => [`${t.course_id}|${normName(t.name)}|${t.session_type}`, t]));
   return async (courseId: string, name: string, type: SessionType, blockId: string | null, lecturerId: string | null) => {
-    const key = `${courseId}|${name.toLowerCase()}|${type}`;
+    const key = `${courseId}|${normName(name)}|${type}`;
     const hit = map.get(key);
     if (hit) {
       if ((!hit.block_id && blockId) || (!hit.lecturer_id && lecturerId)) {
@@ -76,6 +78,24 @@ export async function importTimetable(fd: FormData) {
   const dates = sessions.map((s) => s.date!).sort();
   const blockName = normalizeBlock(String(fd.get("block") ?? "")) ?? (String(fd.get("block") ?? "").trim() || null);
   const blockId = await findOrCreateBlock(supabase, blockName, dates[0], dates.at(-1));
+
+  // A newer version of the timetable: sessions whose title was corrected keep their topic, renamed.
+  if (fd.get("opt_rename") === "on") {
+    const { data: oldRows } = await supabase
+      .from("schedule_sessions")
+      .select("id, course_id, session_date, start_time, end_time, title, venue, lecturer, topic_id")
+      .eq("source_file_id", fileId);
+    const { changes } = diffSessions(
+      sessions.map((s) => ({ i: s.i, courseId: s.courseId, date: s.date, start: normalizeTime(s.start_time), end: normalizeTime(s.end_time), title: s.title.trim(), venue: s.venue, lecturer: s.lecturer })),
+      (oldRows ?? []) as OldSession[],
+    );
+    for (const c of changes) {
+      if (c.kind !== "renamed" || !c.old.topic_id) continue;
+      const title = analysis.sessions[c.i].title.trim();
+      const { data: clash } = await supabase.from("topics").select("id").eq("course_id", c.old.course_id).ilike("name", title.replace(/[%_]/g, "")).limit(1);
+      if (!clash?.length) await supabase.from("topics").update({ name: title }).eq("id", c.old.topic_id);
+    }
+  }
 
   // Re-importing the same file replaces what it added before.
   await supabase.from("schedule_sessions").delete().eq("source_file_id", fileId);
@@ -159,16 +179,30 @@ export async function importTopics(fd: FormData) {
   const findTopic = await topicFinder(supabase);
   const blocks = new Map<string, string | null>();
   let added = 0;
+  let renamed = 0;
   for (const [i, t] of analysis.topics.entries()) {
     if (fd.get(`topic:${i}`) !== "on") continue;
     const courseId = map.get(t.course);
     if (!courseId || !t.name.trim()) continue;
     const blockName = normalizeBlock(t.block);
     if (blockName && !blocks.has(blockName)) blocks.set(blockName, await findOrCreateBlock(supabase, blockName));
+    // A corrected topic name: rename the topic you already have (keeping its files, quizzes and cards).
+    const renameId = String(fd.get(`rename:${i}`) ?? "");
+    if (renameId) {
+      const { data: clash } = await supabase.from("topics").select("id").eq("course_id", courseId).ilike("name", t.name.trim().replace(/[%_]/g, "")).neq("id", renameId).limit(1);
+      if (!clash?.length) {
+        await supabase.from("topics").update({ name: t.name.trim(), source: "list" }).eq("id", renameId);
+        renamed++;
+        continue;
+      }
+    }
     await findTopic(courseId, t.name.trim(), t.type === "other" ? "other" : t.type, blockName ? (blocks.get(blockName) ?? null) : null, null);
     added++;
   }
+  // Topics you chose to remove because the new list no longer has them.
+  const remove = fd.getAll("remove").map(String).filter(Boolean);
+  if (remove.length) await supabase.from("topics").delete().in("id", remove);
   await supabase.from("files").update({ analysis: { ...analysis, pendingReview: false, importedAt: new Date().toISOString() } }).eq("id", fileId);
   revalidatePath("/", "layout");
-  redirect(`/library/file/${fileId}/review?done=${added}`);
+  redirect(`/library/file/${fileId}/review?done=${added}-${renamed}-${remove.length}`);
 }

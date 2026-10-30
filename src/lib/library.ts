@@ -46,3 +46,18 @@ export function storagePath(userId: string, fileId: string, name: string, versio
 export const GENERAL = "general";
 export const courseParam = (id: string | null) => id ?? GENERAL;
 export const courseFromParam = (p: string) => (p === GENERAL ? null : p);
+
+// Guesses the type from the file name so most uploads need no changes.
+export function guessType(name: string) {
+  const n = name.toLowerCase();
+  if (/time ?table|schedule/.test(n)) return "timetable";
+  if (/topic|syllabus|curriculum/.test(n)) return "topic_list";
+  if (/\bmb\b/.test(n)) return "mb_questions";
+  if (/past|pq|question/.test(n)) return "past_questions";
+  if (/practical|prac\b/.test(n)) return "practical";
+  if (/manual/.test(n)) return "manual";
+  if (/notes?\b|summary/.test(n)) return "notes";
+  if (/\.(pptx?|key)$/.test(n) || /\bslides?\b|\blecture\b/.test(n)) return "slides";
+  if (/\.(jpe?g|png|webp|heic)$/.test(n)) return "picture_test";
+  return "";
+}

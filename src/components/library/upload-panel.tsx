@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import Link from "next/link";
 import { CheckCircle2, CircleAlert, Loader2, Upload, X, Eye, PauseCircle } from "lucide-react";
-import { docTypes } from "@/lib/library";
+import { docTypes, guessType } from "@/lib/library";
 import { useBackgroundWork } from "@/components/background-work";
 import type { Progress } from "./pipeline";
 import { Button, Card, Field, inputClass, cx } from "@/components/ui";
@@ -21,21 +21,6 @@ const stageText: Record<Progress["stage"], string> = {
   paused: "Saved — AI paused",
   error: "Failed",
 };
-
-// Guesses the type from the file name so most uploads need no changes.
-function guessType(name: string) {
-  const n = name.toLowerCase();
-  if (/time ?table|schedule/.test(n)) return "timetable";
-  if (/topic|syllabus|curriculum/.test(n)) return "topic_list";
-  if (/\bmb\b/.test(n)) return "mb_questions";
-  if (/past|pq|question/.test(n)) return "past_questions";
-  if (/practical|prac\b/.test(n)) return "practical";
-  if (/manual/.test(n)) return "manual";
-  if (/notes?\b|summary/.test(n)) return "notes";
-  if (/\.(pptx?|key)$/.test(n)) return "slides";
-  if (/\.(jpe?g|png|webp|heic)$/.test(n)) return "picture_test";
-  return "";
-}
 
 export function UploadPanel({
   courseId,
@@ -128,7 +113,7 @@ export function UploadPanel({
             <li key={i.key} className="flex items-start gap-3 rounded-xl bg-surface-2 p-3 text-sm">
               <StageIcon stage={i.progress.stage} />
               <div className="min-w-0 flex-1">
-                <p className="truncate font-medium">{i.file.name}</p>
+                <p className="truncate font-medium">{i.name}</p>
                 <p className={cx("text-xs", i.progress.stage === "error" ? "text-danger" : "text-muted")}>
                   {stageText[i.progress.stage]}
                   {i.progress.message ? ` — ${i.progress.message}` : ""}

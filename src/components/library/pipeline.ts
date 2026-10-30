@@ -67,11 +67,15 @@ export async function runPipeline(
   record: { id: string; path: string },
   courseId: string | null,
   onProgress: (p: Progress) => void,
+  // Files brought in from Google Drive are already in storage; only the reading is left.
+  opts: { uploaded?: boolean } = {},
 ) {
   try {
-    onProgress({ stage: "uploading", step: "upload" });
-    const { error: upErr } = await supabase.storage.from("library").upload(record.path, file, { contentType: file.type || undefined, upsert: true });
-    if (upErr) throw new Error(upErr.message.includes("exceeded") ? "File is bigger than the 50 MB limit." : `Upload failed: ${upErr.message}`);
+    if (!opts.uploaded) {
+      onProgress({ stage: "uploading", step: "upload" });
+      const { error: upErr } = await supabase.storage.from("library").upload(record.path, file, { contentType: file.type || undefined, upsert: true });
+      if (upErr) throw new Error(upErr.message.includes("exceeded") ? "File is bigger than the 50 MB limit." : `Upload failed: ${upErr.message}`);
+    }
 
     onProgress({ stage: "reading", step: "text" });
     const { pages, pageCount, hasText: textLayer, pictureOnly } = await extractText(file, file.name);

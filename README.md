@@ -8,7 +8,7 @@ A personal study app for medical school, starting with Pathology and Pharmacolog
 
 ### 1. Supabase: database and login
 1. Sign up at [supabase.com](https://supabase.com), click **New project**, name it `lengible`, set a database password (save it) and pick the nearest region. Stay on the Free plan.
-2. When the project is ready, open **SQL Editor → New query**, paste everything from `supabase/migrations/0001_foundation.sql` and click **Run**. You should see "Success. No rows returned". Then do the same with `0002_library.sql`, `0003_drugs.sql`, `0004_flashcards.sql`, `0005_quiz_engine.sql`, `0006_material_topics.sql` (and any later numbered files, in order).
+2. When the project is ready, open **SQL Editor → New query**, paste everything from `supabase/migrations/0001_foundation.sql` and click **Run**. You should see "Success. No rows returned". Then do the same with `0002_library.sql`, `0003_drugs.sql`, `0004_flashcards.sql`, `0005_quiz_engine.sql`, `0006_material_topics.sql`, `0007_drive_links.sql` (and any later numbered files, in order).
 3. Create your account: **Authentication → Users → Add user → Create new user**. Enter your email and a password, and tick **Auto Confirm User**.
 4. Lock it down so nobody else can sign up: **Authentication → Sign In / Providers**, turn off **Allow new users to sign up**, and save.
 5. Copy your keys from **Project Settings → API** (the page may be called "API Keys"). You need the **Project URL** and the **anon / public** key. Never use the `service_role` / secret key in this app.
@@ -86,3 +86,11 @@ public/sw.js          service worker (install + offline)
    suffix → class) and "Learn a group" (overview → subgroups → prototype → others → memory aids → mini-quiz)
 6. Course intelligence
 7. Pathology picture tests and on-request diagrams
+
+## Google Drive links (optional)
+
+Library → Google Drive links brings in a folder shared "Anyone with the link" (e.g. your class folder), mirrors its folders, matches
+them to courses, and checks it again every few hours while Lengible is open: new files come in, changed files are refreshed, and
+changed timetables and topic lists show exactly what changed before you apply them. It needs a free Google API key:
+console.cloud.google.com → enable **Google Drive API** → Credentials → Create API key (restrict it to Google Drive API) → add
+`GOOGLE_DRIVE_API_KEY` in Vercel and redeploy.

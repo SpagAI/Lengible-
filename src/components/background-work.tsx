@@ -17,7 +17,10 @@ import { cx } from "@/components/ui";
 export type UploadJob = {
   key: string;
   batch: string;
-  file: File;
+  name: string;
+  // A file chosen on this device, or one to bring in from a Google Drive link.
+  file?: File;
+  driveItemId?: string;
   type: string;
   courseId: string | null;
   folderId: string | null;
@@ -25,10 +28,11 @@ export type UploadJob = {
   id?: string;
   progress: Progress;
 };
-type NewUpload = Omit<UploadJob, "key" | "progress" | "id">;
+type NewUpload = Omit<UploadJob, "key" | "progress" | "id" | "name" | "driveItemId" | "file"> & { file: File };
+export type DriveImport = { id: string; name: string; courseId: string | null; changed?: boolean };
 type Reading = { id: string; name: string; cursor: number; total: number; left: number; note?: string; retryAt?: number } | null;
 
-const Ctx = createContext<{ jobs: UploadJob[]; addUploads: (items: NewUpload[]) => void } | null>(null);
+const Ctx = createContext<{ jobs: UploadJob[]; addUploads: (items: NewUpload[]) => void; addDriveImports: (items: DriveImport[]) => void } | null>(null);
 export const useBackgroundWork = () => useContext(Ctx)!;
 
 const ACTIVE: Progress["stage"][] = ["waiting", "uploading", "reading", "analysing"];
@@ -61,6 +65,31 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
     setJobs(jobsRef.current);
   }, []);
 
+  // Drive: the server copies the file into your storage, then this device reads it like an upload.
+  const bringInFromDrive = useCallback(
+    async (job: UploadJob) => {
+      const r = await postJSON<{ status: string; message?: string; fileId?: string; path?: string; name?: string; mime?: string; courseId?: string | null; url?: string }>(
+        `/api/drive/items/${job.driveItemId}/import`,
+      );
+      if (r.status !== "ok" || !r.url) {
+        update(job.key, { progress: { stage: r.status === "busy" ? "done" : "error", message: r.status === "busy" ? "Already brought in elsewhere." : r.message } });
+        return;
+      }
+      update(job.key, { id: r.fileId, progress: { stage: "uploading", step: "upload", message: "Copied from Google Drive" } });
+      let file: File;
+      try {
+        const blob = await (await fetch(r.url)).blob();
+        file = new File([blob], r.name!, { type: r.mime });
+      } catch {
+        update(job.key, { progress: { stage: "error", message: "Couldn't open the copied file. Try again from the Drive page." } });
+        return;
+      }
+      await runPipeline(supabase, file, { id: r.fileId!, path: r.path! }, r.courseId ?? null, (progress) => update(job.key, { progress }), { uploaded: true });
+      await postJSON(`/api/drive/items/${job.driveItemId}/done`);
+    },
+    [supabase, update],
+  );
+
   // Works through waiting uploads one at a time.
   const pump = useCallback(async () => {
     if (running.current) return;
@@ -69,32 +98,37 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
       for (;;) {
         const job = jobsRef.current.find((j) => j.progress.stage === "waiting");
         if (!job) break;
-        update(job.key, { progress: { stage: "uploading" } });
+        update(job.key, { progress: { stage: "uploading", step: "upload" } });
+        if (job.driveItemId) {
+          await bringInFromDrive(job);
+          continue;
+        }
+        const file = job.file!;
         const record = await createFileRecord({
           courseId: job.courseId,
           folderId: job.folderId,
           topicId: job.topicId,
-          name: job.file.name,
+          name: file.name,
           docType: job.type,
-          mime: job.file.type,
-          size: job.file.size,
+          mime: file.type,
+          size: file.size,
         });
         if ("error" in record) {
           update(job.key, { progress: { stage: "error", message: record.error } });
           continue;
         }
         update(job.key, { id: record.id });
-        await runPipeline(supabase, job.file, record as { id: string; path: string }, job.courseId, (progress) => update(job.key, { progress }));
+        await runPipeline(supabase, file, record as { id: string; path: string }, job.courseId, (progress) => update(job.key, { progress }));
         router.refresh();
       }
     } finally {
       running.current = false;
     }
-  }, [supabase, router, update]);
+  }, [supabase, router, update, bringInFromDrive]);
 
   const addUploads = useCallback(
     (items: NewUpload[]) => {
-      const added = items.map((i) => ({ ...i, key: crypto.randomUUID(), progress: { stage: "waiting" as const } }));
+      const added = items.map((i) => ({ ...i, name: i.file.name, key: crypto.randomUUID(), progress: { stage: "waiting" as const } }));
       jobsRef.current = [...jobsRef.current, ...added];
       setJobs(jobsRef.current);
       void pump();
@@ -102,8 +136,52 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
     [pump],
   );
 
+  const addDriveImports = useCallback(
+    (items: DriveImport[]) => {
+      // Skip anything already queued in this tab.
+      const queued = new Set(jobsRef.current.filter((j) => ACTIVE.includes(j.progress.stage)).map((j) => j.driveItemId));
+      const added = items
+        .filter((i) => !queued.has(i.id))
+        .map((i) => ({
+          key: crypto.randomUUID(),
+          batch: "drive",
+          name: i.changed ? `${i.name} (newer version)` : i.name,
+          driveItemId: i.id,
+          type: "",
+          courseId: i.courseId,
+          folderId: null,
+          topicId: null,
+          progress: { stage: "waiting" as const },
+        }));
+      if (!added.length) return;
+      jobsRef.current = [...jobsRef.current, ...added];
+      setJobs(jobsRef.current);
+      void pump();
+    },
+    [pump],
+  );
+
+  // Your Drive links are checked when Lengible opens (each at most every 6 hours): new files
+  // and newer versions are brought in by themselves.
+  useEffect(() => {
+    let stop = false;
+    (async () => {
+      await sleep(8000);
+      while (!stop) {
+        try {
+          const r = await (await fetch("/api/drive/check", { cache: "no-store" })).json();
+          if (!stop && r.items?.length) addDriveImports(r.items);
+        } catch {}
+        await sleep(6 * 3600_000);
+      }
+    })();
+    return () => {
+      stop = true;
+    };
+  }, [addDriveImports]);
+
   // Closing the tab stops an upload; warn first.
-  const uploading = jobs.some((j) => ACTIVE.includes(j.progress.stage) && j.progress.stage !== "analysing");
+  const uploading = jobs.some((j) => j.file && ACTIVE.includes(j.progress.stage) && j.progress.stage !== "analysing");
   useEffect(() => {
     if (!uploading) return;
     const warn = (e: BeforeUnloadEvent) => e.preventDefault();
@@ -114,7 +192,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
   const reading = useReadingQueue();
 
   return (
-    <Ctx.Provider value={{ jobs, addUploads }}>
+    <Ctx.Provider value={{ jobs, addUploads, addDriveImports }}>
       {children}
       <Dock
         jobs={jobs}
@@ -276,7 +354,7 @@ function Dock({ jobs, reading, onClear }: { jobs: UploadJob[]; reading: ReturnTy
             <button type="button" onClick={() => toggle(j.key)} className="flex w-full items-start gap-2 text-left" aria-expanded={shown === j.key}>
               <StageIcon stage={j.progress.stage} />
               <span className="min-w-0 flex-1">
-                <span className="block truncate font-medium">{j.file.name}</span>
+                <span className="block truncate font-medium">{j.name}</span>
                 <span className={cx("block truncate", j.progress.stage === "error" ? "text-danger" : "text-muted")}>
                   {stageText[j.progress.stage]}
                   {j.progress.step === "ai" && j.progress.total ? ` · page ${j.progress.done ?? 0} of ${j.progress.total}` : ""}
