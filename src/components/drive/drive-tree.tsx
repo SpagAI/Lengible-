@@ -7,6 +7,7 @@ import { CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Download, FileTex
 import type { DriveItem } from "@/lib/supabase/types";
 import { checkDriveLink, setAutoImport, setFolderCourse, setFolderInclude, updateDriveItem } from "@/app/(app)/library/drive/actions";
 import { useBackgroundWork } from "@/components/background-work";
+import { InfoTip } from "@/components/info-tip";
 import { docTypes, formatBytes } from "@/lib/library";
 import { whenLabel } from "@/lib/dates";
 import { Button, Card, cx, inputClass } from "@/components/ui";
@@ -18,7 +19,10 @@ const statusChip: Record<DriveItem["status"], { label: string; cls: string }> = 
   imported: { label: "In your Library", cls: "bg-ok/15 text-ok" },
   skipped: { label: "Can't be read", cls: "bg-surface-2 text-muted" },
   error: { label: "Problem", cls: "bg-danger/10 text-danger" },
-  removed: { label: "Deleted in Drive · kept in your Library", cls: "bg-surface-2 text-muted" },
+  removed: {
+    label: "Deleted in Drive · kept in your Library",
+    cls: "bg-surface-2 text-muted",
+  },
 };
 
 export function DriveTree({
@@ -49,7 +53,13 @@ export function DriveTree({
     setOverrides((o) => {
       const copy = { ...o };
       next.forEach((n, k) => {
-        if (n !== items[k]) copy[n.id] = { ...copy[n.id], include: n.include, doc_type: n.doc_type, course_id: n.course_id };
+        if (n !== items[k])
+          copy[n.id] = {
+            ...copy[n.id],
+            include: n.include,
+            doc_type: n.doc_type,
+            course_id: n.course_id,
+          };
       });
       return copy;
     });
@@ -109,10 +119,14 @@ export function DriveTree({
   const running = new Set(active.flatMap((j) => [j.driveItemId, j.processFileId, j.id].filter(Boolean) as string[]));
   // Files in your Library that are stored but not processed yet (in a folder, or "" for everything).
   const isStored = (i: DriveItem) => i.status === "imported" && !!i.file_id && fileStatus[i.file_id] === "uploaded";
-  const storedIn = (path: string) => items.filter((i) => isStored(i) && !running.has(i.file_id!) && (!path || i.path === path || i.path.startsWith(`${path}/`)));
+  const storedIn = (path: string) =>
+    items.filter((i) => isStored(i) && !running.has(i.file_id!) && (!path || i.path === path || i.path.startsWith(`${path}/`)));
   const processThese = (list: DriveItem[]) => {
     addProcessJobs(list.map((i) => ({ id: i.file_id!, name: i.name })));
-    setNote({ ok: true, text: `Processing ${list.length} file${list.length === 1 ? "" : "s"}. Follow them in the corner panel; you can leave this page.` });
+    setNote({
+      ok: true,
+      text: `Processing ${list.length} file${list.length === 1 ? "" : "s"}. Follow them in the corner panel; you can leave this page.`,
+    });
   };
 
   const shown = items.filter((i) =>
@@ -143,11 +157,17 @@ export function DriveTree({
   const tickState = (path: string) => {
     const list = within(path);
     const on = list.filter((i) => i.include).length;
-    return { state: on === 0 ? "none" : on === list.length ? "all" : "some", on, total: list.length } as const;
+    return {
+      state: on === 0 ? "none" : on === list.length ? "all" : "some",
+      on,
+      total: list.length,
+    } as const;
   };
   const tickFolder = (path: string) => {
     const include = tickState(path).state !== "all";
-    setItems((cur) => cur.map((i) => (i.status !== "skipped" && (!path || i.path === path || i.path.startsWith(`${path}/`)) ? { ...i, include } : i)));
+    setItems((cur) =>
+      cur.map((i) => (i.status !== "skipped" && (!path || i.path === path || i.path.startsWith(`${path}/`)) ? { ...i, include } : i)),
+    );
     void setFolderInclude(sourceId, path, include);
   };
   // Folder tree: every folder path, with the files directly inside it.
@@ -185,7 +205,15 @@ export function DriveTree({
   };
 
   const bring = (process: boolean) => {
-    addDriveImports(toBring.map((i) => ({ id: i.id, name: i.name, courseId: i.course_id, changed: i.status === "changed", process })));
+    addDriveImports(
+      toBring.map((i) => ({
+        id: i.id,
+        name: i.name,
+        courseId: i.course_id,
+        changed: i.status === "changed",
+        process,
+      })),
+    );
     const n = `${toBring.length} file${toBring.length === 1 ? "" : "s"}`;
     setNote({
       ok: true,
@@ -205,22 +233,36 @@ export function DriveTree({
               <b className="text-text">Tick</b> the folders and files you want in Lengible (below). Nothing is taken until you choose.
             </li>
             <li>
-              <b className="text-text">Bring in only</b> to store them, or <b className="text-text">Bring in &amp; process</b> to also read them for topics,
-              quizzes and flashcards.
+              <b className="text-text">Bring in only</b> to store them, or <b className="text-text">Bring in &amp; process</b> to also read them for
+              topics, quizzes and flashcards.
             </li>
             <li>What you picked stays up to date with Drive.</li>
           </ol>
         )}
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-x-1 gap-y-2">
           <Button disabled={!toBring.length} onClick={() => bring(false)}>
-            <Download size={16} /> Bring in only{toBring.length ? ` (${toBring.length})` : ""}
+            <Download size={16} /> Bring in only
+            {toBring.length ? ` (${toBring.length})` : ""}
           </Button>
+          <InfoTip label="Bring in only" className="mr-2">
+            Copies the ticked files into your Library without reading them. Quick. They show as “Stored · not processed”; tap <b>Process</b> on a
+            folder or file when you need it.
+          </InfoTip>
           <Button variant="secondary" disabled={!toBring.length} onClick={() => bring(true)}>
-            <Play size={16} /> Bring in &amp; process{toBring.length ? ` (${toBring.length})` : ""}
+            <Play size={16} /> Bring in &amp; process
+            {toBring.length ? ` (${toBring.length})` : ""}
           </Button>
+          <InfoTip label="Bring in & process" className="mr-2">
+            Copies the ticked files and reads them straight away: topics are found and the text is saved, so you can search them and make flashcards
+            and quizzes. Takes longer; follow it in the corner panel.
+          </InfoTip>
           <Button variant="secondary" disabled={checking} onClick={() => check(false)}>
             {checking ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />} Check for changes
           </Button>
+          <InfoTip label="Check for changes">
+            Looks at the Google Drive again now for new files, newer versions and deleted files. Lengible also does this by itself every hour while
+            it&apos;s open, and when you open this page.
+          </InfoTip>
         </div>
         <p className="text-xs text-muted">
           {checking ? "Checking Google Drive for changes…" : lastChecked ? `Last checked ${whenLabel(lastChecked)}.` : "Not checked yet."}
@@ -237,29 +279,35 @@ export function DriveTree({
         </p>
         {!toBring.length && nothingYet && <p className="text-xs text-muted">Tick something below to bring it in.</p>}
         {storedIn("").length > 0 && (
-          <Button variant="secondary" onClick={() => processThese(storedIn(""))}>
-            <Play size={16} /> Process all stored files ({storedIn("").length})
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button variant="secondary" onClick={() => processThese(storedIn(""))}>
+              <Play size={16} /> Process all stored files ({storedIn("").length})
+            </Button>
+            <InfoTip label="Process">
+              Reads files you brought in but haven&apos;t processed yet: finds their topics and saves their text for search, flashcards and quizzes.
+              Each folder and file also has its own Process button.
+            </InfoTip>
+          </div>
         )}
-        <label className="flex items-start gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={auto}
-            onChange={(e) => {
-              setAuto(e.target.checked);
-              void setAutoImport(sourceId, e.target.checked);
-            }}
-            className="mt-0.5 size-4 accent-[var(--brand)]"
-          />
-          <span>
-            Keep what I picked up to date
-            <span className="block text-xs text-muted">
-              Lengible checks this link when you open Lengible and every hour while it&apos;s open (and when you open this page). Newer versions of files you brought in replace the old ones (processed
-              again if you had processed them), and new files in folders you ticked whole come in by themselves. Changed timetables and topic
-              lists wait for you to review what changed.
-            </span>
-          </span>
-        </label>
+        <div className="flex items-start gap-1">
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={auto}
+              onChange={(e) => {
+                setAuto(e.target.checked);
+                void setAutoImport(sourceId, e.target.checked);
+              }}
+              className="mt-0.5 size-4 accent-[var(--brand)]"
+            />
+            <span>Keep what I picked up to date</span>
+          </label>
+          <InfoTip label="Keep what I picked up to date" className="-mt-0.5">
+            When Drive changes, newer versions of files you brought in replace the old ones (processed again if you had processed them), and new files
+            in folders you ticked whole come in by themselves. Changed timetables and topic lists wait for you to review what changed. Turn off to
+            bring in updates only when you choose.
+          </InfoTip>
+        </div>
         {note && <p className={cx("text-sm", note.ok ? "text-muted" : "text-danger")}>{note.text}</p>}
       </Card>
 
@@ -272,7 +320,12 @@ export function DriveTree({
             ["all", `All (${items.length})`],
           ] as const
         ).map(([k, label]) => (
-          <button key={k} type="button" onClick={() => setFilter(k)} className={cx("shrink-0 rounded-full px-3 py-1.5", filter === k ? "bg-brand text-on-brand" : "bg-surface-2 text-muted")}>
+          <button
+            key={k}
+            type="button"
+            onClick={() => setFilter(k)}
+            className={cx("shrink-0 rounded-full px-3 py-1.5", filter === k ? "bg-brand text-on-brand" : "bg-surface-2 text-muted")}
+          >
             {label}
           </button>
         ))}
@@ -380,7 +433,7 @@ export function DriveTree({
                         type="button"
                         onClick={() => processThese(storedIn(path))}
                         className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-brand px-2 py-1 text-xs font-medium text-on-brand"
-                        title="Read these files for topics, quizzes and flashcards"
+                        title="Process: read these stored files for topics, search, flashcards and quizzes"
                       >
                         <Play size={12} /> Process {storedIn(path).length}
                       </button>
@@ -432,7 +485,11 @@ export function DriveTree({
                         ) : isStored(i) ? (
                           <>
                             <span className="rounded-full bg-surface-2 px-1.5 text-muted">Stored · not processed</span>
-                            <button type="button" onClick={() => processThese([i])} className="inline-flex items-center gap-0.5 font-medium text-brand">
+                            <button
+                              type="button"
+                              onClick={() => processThese([i])}
+                              className="inline-flex items-center gap-0.5 font-medium text-brand"
+                            >
                               <Play size={11} /> Process
                             </button>
                           </>
@@ -441,7 +498,9 @@ export function DriveTree({
                             {i.status === "imported" ? "Processed" : statusChip[i.status].label}
                           </span>
                         )}
-                        {isNewInDrive(i) && i.status !== "removed" && <span className="rounded-full bg-brand px-1.5 font-medium text-on-brand">New in Drive</span>}
+                        {isNewInDrive(i) && i.status !== "removed" && (
+                          <span className="rounded-full bg-brand px-1.5 font-medium text-on-brand">New in Drive</span>
+                        )}
                         {i.size_bytes ? formatBytes(i.size_bytes) : null}
                         {i.modified_time && <span>· modified {whenLabel(i.modified_time)}</span>}
                         {i.error && <span className={i.status === "error" ? "text-danger" : ""}>{i.error}</span>}
@@ -469,8 +528,8 @@ export function DriveTree({
         </Card>
       )}
       <p className="flex items-start gap-1.5 text-xs text-muted">
-        <Sparkles size={13} className="mt-0.5 shrink-0" /> Each Drive folder becomes a Library folder under its course. Timetables and topic lists
-        are read and then wait for your review; when one changes in Drive you&apos;ll see exactly what changed before anything updates.
+        <Sparkles size={13} className="mt-0.5 shrink-0" /> Each Drive folder becomes a Library folder under its course. Timetables and topic lists are
+        read and then wait for your review; when one changes in Drive you&apos;ll see exactly what changed before anything updates.
       </p>
       {items.some((i) => i.status === "error") && (
         <p className="flex items-start gap-1.5 text-xs text-danger">
