@@ -104,6 +104,7 @@ Library → Google Drive links lists everything in a folder shared "Anyone with 
 you tick folders or files; then **Bring in only** stores them and **Bring in & process** also reads them (stored files can be processed
 later, per folder or file). Folders are mirrored and matched to courses. The link is checked again every few hours while Lengible is
 open: newer versions of what you picked replace the old ones (processed again if you had processed them), new files in folders you
-ticked whole come in by themselves, and changed timetables and topic lists show exactly what changed before you apply them. It needs a free Google API key:
+ticked whole come in by themselves, and changed timetables and topic lists show exactly what changed before you apply them. PowerPoint and Word files (and anything over 50 MB) aren't copied into Supabase storage: Lengible keeps a link, reads their text on
+the server, and shows them with Google's viewer, so there's no size limit and they don't use your 1 GB of free storage. It needs a free Google API key:
 console.cloud.google.com → enable **Google Drive API** → Credentials → Create API key (restrict it to Google Drive API) → add
 `GOOGLE_DRIVE_API_KEY` in Vercel and redeploy.

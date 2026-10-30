@@ -251,15 +251,32 @@ export async function listFolder(id: string, resourceKey: string | null) {
   return { files: out, folders, truncated, blocked: blocked.sort() };
 }
 
-// Downloads a file (Google Docs/Slides as PDF), refusing anything over the 50 MB storage limit.
-export async function download(item: Pick<DriveItem, "drive_id" | "resource_key" | "mime" | "size_bytes">) {
+// PowerPoint and Word files (and anything over the 50 MB storage limit) aren't copied into your storage:
+// Lengible keeps a link to the Drive file, reads its text on the server, and shows it with Google's viewer.
+// This saves your Supabase storage (1 GB on the free plan) and has no size limit.
+export const isLinkOnly = (item: Pick<DriveItem, "mime" | "name" | "size_bytes">) =>
+  (!EXPORT_AS_PDF.has(item.mime) && /\.(pptx|docx)$/i.test(item.name)) ||
+  item.mime === "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
+  item.mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+  (!!item.size_bytes && item.size_bytes > MAX_BYTES && !EXPORT_AS_PDF.has(item.mime));
+// The storage path of a linked file: no copy, just where it lives in Drive (and its name, for its type).
+export const drivePath = (driveId: string, name: string) => `drive:${driveId}/${name}`;
+export const isDrivePath = (path: string) => path.startsWith("drive:");
+export const drivePreviewUrl = (driveId: string, resourceKey?: string | null) =>
+  `https://drive.google.com/file/d/${driveId}/preview${resourceKey ? `?resourcekey=${resourceKey}` : ""}`;
+export const driveOpenUrl = (driveId: string, resourceKey?: string | null) =>
+  `https://drive.google.com/open?id=${driveId}${resourceKey ? `&resourcekey=${resourceKey}` : ""}`;
+
+// Downloads a file (Google Docs/Slides as PDF), refusing anything over the limit (the 50 MB storage limit,
+// unless it's only being read on the server).
+export async function download(item: Pick<DriveItem, "drive_id" | "resource_key" | "mime" | "size_bytes">, limit = MAX_BYTES) {
   const keys = item.resource_key ? [`${item.drive_id}/${item.resource_key}`] : [];
-  if (item.size_bytes && item.size_bytes > MAX_BYTES) throw new DriveError(`Over the 50 MB limit (${Math.round(item.size_bytes / 1e6)} MB). Compress or split it, then add it by hand.`, "too_big");
+  if (item.size_bytes && item.size_bytes > limit) throw new DriveError(`Over the 50 MB limit (${Math.round(item.size_bytes / 1e6)} MB). Compress or split it, then add it by hand.`, "too_big");
   const res = EXPORT_AS_PDF.has(item.mime)
     ? await call(`/files/${item.drive_id}/export`, { mimeType: "application/pdf" }, keys)
     : await call(`/files/${item.drive_id}`, { alt: "media", acknowledgeAbuse: "true" }, keys);
   const buf = Buffer.from(await res.arrayBuffer());
-  if (buf.length > MAX_BYTES) throw new DriveError(`Over the 50 MB limit (${Math.round(buf.length / 1e6)} MB). Compress or split it, then add it by hand.`, "too_big");
+  if (buf.length > limit) throw new DriveError(`Over the 50 MB limit (${Math.round(buf.length / 1e6)} MB). Compress or split it, then add it by hand.`, "too_big");
   return buf;
 }
 
@@ -334,9 +351,9 @@ export async function syncItems(supabase: DB, source: DriveSource) {
         md5: f.md5,
         course_id: course,
         doc_type: type,
-        include: !why && !(f.size && f.size > MAX_BYTES) && pickedFolder(f.path),
+        include: !why && pickedFolder(f.path),
         status: (why ? "skipped" : "new") as DriveItem["status"],
-        error: why ?? (f.size && f.size > MAX_BYTES ? `Over the 50 MB limit (${Math.round(f.size / 1e6)} MB).` : null),
+        error: why ?? null,
       });
       continue;
     }
@@ -351,6 +368,8 @@ export async function syncItems(supabase: DB, source: DriveSource) {
       changed++;
     }
     if (old.status === "removed") update.status = old.file_id ? "imported" : "new";
+    // Big files used to be refused; they're linked now.
+    if (old.error && /50 MB limit/.test(old.error) && old.status !== "imported") Object.assign(update, { error: null, ...(old.status === "error" ? { status: "new" } : {}) });
     if (Object.keys(update).length) updates.push({ id: old.id, update });
   }
   // Saved 20 at a time (a big drive can have thousands of files moved or renamed at once).

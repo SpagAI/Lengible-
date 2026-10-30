@@ -13,6 +13,7 @@ import { LinkedText } from "@/components/library/linked-text";
 import { ConfirmButton } from "@/components/confirm-button";
 import { MaterialCardsButton } from "@/components/flashcards/deck-buttons";
 import { ProcessDetails } from "@/components/process-details";
+import { driveOpenUrl, drivePreviewUrl, isDrivePath } from "@/lib/drive";
 import { ProcessFileButton } from "@/components/library/process-bar";
 import { MaterialQuiz } from "@/components/quiz/material-quiz";
 import { AskPanel } from "@/components/ask/ask-panel";
@@ -52,7 +53,15 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
   ]);
   // Where it came from in Google Drive, if it was brought in from a Drive link.
   const { data: driveItem } = await supabase.from("drive_items").select("drive_id, resource_key").eq("file_id", id).limit(1).maybeSingle();
-  const driveUrl = driveItem ? `https://drive.google.com/open?id=${driveItem.drive_id}${driveItem.resource_key ? `&resourcekey=${driveItem.resource_key}` : ""}` : null;
+  const driveUrl = driveItem ? driveOpenUrl(driveItem.drive_id, driveItem.resource_key) : null;
+  // Linked from Drive (PowerPoint/Word or very big files): nothing copied; shown with Google's viewer.
+  const linked = isDrivePath(file.storage_path) && driveItem
+    ? {
+        open: driveUrl!,
+        download: `https://drive.google.com/uc?export=download&id=${driveItem.drive_id}${driveItem.resource_key ? `&resourcekey=${driveItem.resource_key}` : ""}`,
+        preview: drivePreviewUrl(driveItem.drive_id, driveItem.resource_key),
+      }
+    : null;
   const topicName = new Map((topics ?? []).map((t) => [t.id, t.name]));
   const reading = file.analysis as { kind?: string; cursor?: number; totalPages?: number; finished?: boolean; skipped?: boolean; v?: number } | null;
   const inProgress = reading?.kind === "concepts" && !reading.finished && !reading.skipped && (reading.cursor ?? 0) > 0;
@@ -102,6 +111,7 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
         }}
         viewUrl={viewUrl}
         downloadUrl={download.data?.signedUrl ?? viewUrl}
+        linked={linked ? { open: linked.open, download: linked.download } : undefined}
       />
 
       {/* Stored (e.g. from Drive) but not read yet: process it when you need it. */}
@@ -125,7 +135,7 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
           <MaterialQuiz label={file.name} fileId={id} pages={file.page_count ?? undefined} startPage={sp.page ? startPage : undefined} buttonLabel="Quiz me on this file" />
         </div>
       )}
-      {driveUrl && (
+      {driveUrl && !linked && (
         <a href={driveUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1 text-sm text-brand">
           Open in Google Drive <ExternalLink size={13} />
         </a>
@@ -221,7 +231,9 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
 
       <Card className="mt-3 overflow-hidden p-0">
         {tab === "view" &&
-          (isPdf && viewUrl ? (
+          (linked ? (
+            <iframe src={linked.preview} title={file.name} className="h-[80dvh] w-full border-0 bg-surface-2" allow="autoplay" />
+          ) : isPdf && viewUrl ? (
             <PdfViewer url={viewUrl} startPage={startPage} />
           ) : isImage && viewUrl ? (
             // eslint-disable-next-line @next/next/no-img-element

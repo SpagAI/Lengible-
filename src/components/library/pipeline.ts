@@ -60,6 +60,32 @@ export async function analyze(fileId: string, onProgress: (p: Progress) => void,
   return { status: "error", message: "Stopped after too many steps." };
 }
 
+// A file linked from Google Drive (PowerPoint/Word, nothing copied): the server reads its text, then the AI pass.
+export async function runDrivePipeline(fileId: string, onProgress: (p: Progress) => void) {
+  onProgress({ stage: "reading", step: "text", message: "Reading the slides from Google Drive…" });
+  let r = await postJSON<{ status: string; message?: string; pages?: number; hasText?: boolean }>(`/api/files/${fileId}/read-drive`);
+  // A dropped connection or a server hiccup: one more try.
+  if (r.status !== "ok" && /connection|server had a problem|took too long/i.test(r.message ?? "")) {
+    await new Promise((res) => setTimeout(res, 3000));
+    r = await postJSON(`/api/files/${fileId}/read-drive`);
+  }
+  if (r.status !== "ok") {
+    onProgress({ stage: "error", message: r.message });
+    return;
+  }
+  onProgress({ stage: "reading", step: "text", message: `${r.pages} slides/pages saved`, done: r.pages, total: r.pages });
+  if (!r.hasText) {
+    onProgress({ stage: "no_text", message: "No text in this file (the slides may be pictures only)." });
+    return;
+  }
+  onProgress({ stage: "analysing", step: "ai" });
+  const result = await analyze(fileId, onProgress);
+  if (result.status === "review") onProgress({ stage: "review", message: result.message });
+  else if (result.status === "rate_limited") onProgress({ stage: "paused", message: result.message });
+  else if (result.status === "error") onProgress({ stage: "error", message: result.message });
+  else onProgress({ stage: "done", message: result.status === "skipped" ? result.message : undefined });
+}
+
 // Upload → read text in the browser → save the text → AI pass.
 export async function runPipeline(
   supabase: SupabaseClient<Database>,

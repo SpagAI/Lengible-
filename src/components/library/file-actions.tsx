@@ -6,7 +6,7 @@ import { Download, ExternalLink, ImageIcon, Loader2, RefreshCw, Share2, Sparkles
 import { useSupabase } from "@/lib/supabase/client";
 import { finishExtraction, startReplace } from "@/app/(app)/library/actions";
 import { findPicturePages, PICTURE_PAGE_CHARS } from "@/lib/extract/client";
-import { analyze, MAX_PICTURE_PAGES, readPicturePages, runPipeline, type Progress } from "./pipeline";
+import { analyze, MAX_PICTURE_PAGES, readPicturePages, runDrivePipeline, runPipeline, type Progress } from "./pipeline";
 import { StageIcon } from "./upload-panel";
 import { Button } from "@/components/ui";
 import { postJSON } from "@/lib/fetch-json";
@@ -15,10 +15,13 @@ export function FileActions({
   file,
   viewUrl,
   downloadUrl,
+  linked,
 }: {
   file: { id: string; name: string; mime: string | null; courseId: string | null; status: string; ext: string; scanSkipped: boolean; scanPausedAt: number; pages: number };
   viewUrl: string;
   downloadUrl: string;
+  // Linked from Google Drive (not copied): opened and downloaded from Drive, read again from Drive.
+  linked?: { open: string; download: string };
 }) {
   const supabase = useSupabase();
   const router = useRouter();
@@ -100,7 +103,27 @@ export function FileActions({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap gap-2">
-        {canShare ? (
+        {linked ? (
+          <>
+            <a href={linked.open} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand px-4 text-sm font-medium text-on-brand">
+              <ExternalLink size={16} /> Open in Google Drive
+            </a>
+            <a href={linked.download} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-border bg-surface px-4 text-sm font-medium hover:bg-surface-2">
+              <Download size={16} /> Download
+            </a>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={!!busy}
+              onClick={async () => {
+                await runDrivePipeline(file.id, setProgress);
+                router.refresh();
+              }}
+            >
+              <RefreshCw size={16} /> {file.status === "uploaded" ? "Process" : "Read again from Drive"}
+            </Button>
+          </>
+        ) : canShare ? (
           <Button type="button" onClick={shareFile} disabled={sharing}>
             {sharing ? <Loader2 size={16} className="animate-spin" /> : <Share2 size={16} />} Open in another app
           </Button>
@@ -109,13 +132,17 @@ export function FileActions({
             <ExternalLink size={16} /> Open in another app
           </a>
         )}
-        <a href={downloadUrl} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-border bg-surface px-4 text-sm font-medium hover:bg-surface-2">
-          <Download size={16} /> Download
-        </a>
-        <Button type="button" variant="secondary" disabled={!!busy} onClick={() => input.current?.click()}>
-          <Upload size={16} /> Replace with new version
-        </Button>
-        {file.status === "no_text" ? (
+        {!linked && (
+          <>
+            <a href={downloadUrl} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-border bg-surface px-4 text-sm font-medium hover:bg-surface-2">
+              <Download size={16} /> Download
+            </a>
+            <Button type="button" variant="secondary" disabled={!!busy} onClick={() => input.current?.click()}>
+              <Upload size={16} /> Replace with new version
+            </Button>
+          </>
+        )}
+        {linked && (file.status === "uploaded" || file.status === "failed" || file.status === "no_text") ? null : file.status === "no_text" ? (
           <Button type="button" variant="secondary" disabled={!!busy} onClick={() => (isPdf ? readPictures() : reanalyse(true))}>
             <Sparkles size={16} /> Read with AI
           </Button>
@@ -140,7 +167,7 @@ export function FileActions({
             <RefreshCw size={16} /> Re-analyse
           </Button>
         )}
-        {isPdf && file.status !== "no_text" && (
+        {isPdf && !linked && file.status !== "no_text" && (
           <Button type="button" variant="ghost" disabled={!!busy} onClick={readPictures} title="Slides that are mostly a diagram, micrograph or table">
             <ImageIcon size={16} /> Read picture pages
           </Button>

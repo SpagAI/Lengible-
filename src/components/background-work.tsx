@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { BookOpenText, ChevronDown, ChevronRight, Loader2, Pause, Play, Upload } from "lucide-react";
 import { useSupabase } from "@/lib/supabase/client";
 import { createFileRecord } from "@/app/(app)/library/actions";
-import { runPipeline, type Progress } from "@/components/library/pipeline";
+import { runDrivePipeline, runPipeline, type Progress } from "@/components/library/pipeline";
 import { StageIcon } from "@/components/library/upload-panel";
 import { ProcessDetails } from "@/components/process-details";
 import { postJSON } from "@/lib/fetch-json";
@@ -78,7 +78,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
   // Drive: the server copies the file into your storage, then this device reads it like an upload.
   const bringInFromDrive = useCallback(
     async (job: UploadJob) => {
-      const r = await postJSON<{
+      const first = await postJSON<{
         status: string;
         message?: string;
         fileId?: string;
@@ -88,22 +88,35 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
         courseId?: string | null;
         url?: string;
         wasProcessed?: boolean;
+        linkOnly?: boolean;
       }>(`/api/drive/items/${job.driveItemId}/import`);
-      if (r.status !== "ok" || !r.url) {
+      let r = first;
+      // Network drops and server hiccups get one more try; real problems (not shared, too big…) don't.
+      if (r.status === "error" && /connection|server had a problem|took too long|Couldn't bring this file in/i.test(r.message ?? "")) {
+        await new Promise((res) => setTimeout(res, 4000));
+        r = await postJSON<typeof first>(`/api/drive/items/${job.driveItemId}/import`);
+      }
+      if (r.status !== "ok" || (!r.url && !r.linkOnly)) {
         update(job.key, { progress: { stage: r.status === "busy" ? "done" : "error", message: r.status === "busy" ? "Already brought in elsewhere." : r.message } });
         return;
       }
       if (!job.process && !r.wasProcessed) {
         // Stored only: it waits in your Library until you tap Process.
         await postJSON(`/api/drive/items/${job.driveItemId}/done`);
-        update(job.key, { id: r.fileId, progress: { stage: "done", message: "Stored. Tap Process when you need it." } });
+        update(job.key, { id: r.fileId, progress: { stage: "done", message: r.linkOnly ? "Linked from Drive. Tap Process when you need it." : "Stored. Tap Process when you need it." } });
         router.refresh();
+        return;
+      }
+      if (r.linkOnly) {
+        update(job.key, { id: r.fileId });
+        await runDrivePipeline(r.fileId!, (progress) => update(job.key, { progress }));
+        await postJSON(`/api/drive/items/${job.driveItemId}/done`);
         return;
       }
       update(job.key, { id: r.fileId, progress: { stage: "uploading", step: "upload", message: "Copied from Google Drive" } });
       let file: File;
       try {
-        const blob = await (await fetch(r.url)).blob();
+        const blob = await (await fetch(r.url!)).blob();
         file = new File([blob], r.name!, { type: r.mime });
       } catch {
         update(job.key, { progress: { stage: "error", message: "Couldn't open the copied file. Try again from the Drive page." } });
@@ -118,9 +131,14 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
   // Process a stored file: read it from the start, the same way as an upload.
   const processStored = useCallback(
     async (job: UploadJob) => {
-      const r = await postJSON<{ status: string; message?: string; url?: string; name?: string; mime?: string; path?: string; courseId?: string | null }>(
+      const r = await postJSON<{ status: string; message?: string; url?: string; name?: string; mime?: string; path?: string; courseId?: string | null; linkOnly?: boolean }>(
         `/api/files/${job.processFileId}/prepare`,
       );
+      if (r.status === "ok" && r.linkOnly) {
+        update(job.key, { id: job.processFileId });
+        await runDrivePipeline(job.processFileId!, (progress) => update(job.key, { progress }));
+        return;
+      }
       if (r.status !== "ok" || !r.url) {
         update(job.key, { progress: { stage: "error", message: r.message ?? "Couldn't open the stored file." } });
         return;
@@ -434,8 +452,10 @@ function Dock({ jobs, reading, onClear }: { jobs: UploadJob[]; reading: ReturnTy
               <StageIcon stage={j.progress.stage} />
               <span className="min-w-0 flex-1">
                 <span className="block truncate font-medium">{j.name}</span>
-                <span className={cx("block truncate", j.progress.stage === "error" ? "text-danger" : "text-muted")}>
+                <span className={cx("block", j.progress.stage === "error" ? "line-clamp-3 text-danger" : "truncate text-muted")}>
                   {stageText[j.progress.stage]}
+                  {/* Why it failed, right here (no need to open the details). */}
+                  {j.progress.stage === "error" && j.progress.message ? ` · ${j.progress.message}` : ""}
                   {j.progress.step === "ai" && j.progress.total ? ` · page ${j.progress.done ?? 0} of ${j.progress.total}` : ""}
                   {j.progress.step === "pictures" && j.progress.total ? ` · picture ${j.progress.done ?? 0} of ${j.progress.total}` : ""}
                 </span>
