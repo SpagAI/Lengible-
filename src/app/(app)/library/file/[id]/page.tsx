@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ChevronRight, ExternalLink, Layers, Trash2 } from "lucide-react";
+import { BookOpenText, ChevronRight, ExternalLink, Layers, Trash2 } from "lucide-react";
 import { requireUser } from "@/lib/supabase/server";
 import { getCourses } from "@/lib/courses";
 import { courseParam, docTypeLabel, docTypes, formatBytes, importableTypes } from "@/lib/library";
@@ -118,6 +118,12 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
         linked={linked ? { open: linked.open, download: linked.download } : undefined}
       />
 
+      <Link
+        href={`/read?files=${file.id}${sp.page ? `&page=${startPage}` : ""}`}
+        className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand px-4 text-sm font-medium text-on-brand"
+      >
+        <BookOpenText size={16} /> Read
+      </Link>
       {file.profile && <ProfileCard fileId={file.id} profile={file.profile} />}
 
       {/* Stored (e.g. from Drive) but not read yet: process it when you need it. */}

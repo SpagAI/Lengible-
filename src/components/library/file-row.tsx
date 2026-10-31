@@ -19,11 +19,12 @@ const statusBadge: Partial<Record<LibraryFile["status"], { text: string; cls: st
   no_text: { text: "Needs AI reading", cls: "bg-warn/15 text-warn" },
 };
 
-export function FileRow({ file, courseName }: { file: LibraryFile; courseName?: string }) {
+// plain: no link (e.g. inside a selectable row).
+export function FileRow({ file, courseName, plain }: { file: LibraryFile; courseName?: string; plain?: boolean }) {
   const badge = statusBadge[file.status];
   const needsReview = !!(file.analysis as { pendingReview?: boolean } | null)?.pendingReview;
   return (
-    <Link href={`/library/file/${file.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-surface-2">
+    <Wrap href={`/library/file/${file.id}`} plain={plain} className="flex items-center gap-3 px-4 py-3 hover:bg-surface-2">
       <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand-strong">
         <FileTypeIcon file={file} />
       </span>
@@ -39,6 +40,16 @@ export function FileRow({ file, courseName }: { file: LibraryFile; courseName?: 
       {/* Processed: green 100%; not processed yet: red 0%; failed: red. */}
       <ProgressPct pct={["analysed", "extracted", "no_text"].includes(file.status) ? 100 : 0} failed={file.status === "failed"} />
       {badge && <span className={cx("shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium", badge.cls)}>{badge.text}</span>}
+    </Wrap>
+  );
+}
+
+function Wrap({ plain, href, className, children }: { plain?: boolean; href: string; className: string; children: React.ReactNode }) {
+  return plain ? (
+    <span className={className}>{children}</span>
+  ) : (
+    <Link href={href} className={className}>
+      {children}
     </Link>
   );
 }

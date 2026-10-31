@@ -8,7 +8,7 @@ A personal study app for medical school, starting with Pathology and Pharmacolog
 
 ### 1. Supabase: database and login
 1. Sign up at [supabase.com](https://supabase.com), click **New project**, name it `lengible`, set a database password (save it) and pick the nearest region. Stay on the Free plan.
-2. When the project is ready, open **SQL Editor → New query**, paste everything from `supabase/migrations/0001_foundation.sql` and click **Run**. You should see "Success. No rows returned". Then do the same with `0002_library.sql`, `0003_drugs.sql`, `0004_flashcards.sql`, `0005_quiz_engine.sql`, `0006_material_topics.sql`, `0007_drive_links.sql`, `0008_ally_and_history.sql` (and any later numbered files, in order). Every file is safe to run again.
+2. When the project is ready, open **SQL Editor → New query**, paste everything from `supabase/migrations/0001_foundation.sql` and click **Run**. You should see "Success. No rows returned". Then do the same with `0002_library.sql`, `0003_drugs.sql`, `0004_flashcards.sql`, `0005_quiz_engine.sql`, `0006_material_topics.sql`, `0007_drive_links.sql`, `0008_ally_and_history.sql`, `0009_server_processing.sql` (and any later numbered files, in order). Every file is safe to run again.
 3. Create your account: **Authentication → Users → Add user → Create new user**. Enter your email and a password, and tick **Auto Confirm User**.
 4. Lock it down so nobody else can sign up: **Authentication → Sign In / Providers**, turn off **Allow new users to sign up**, and save.
 5. Copy your keys from **Project Settings → API** (the page may be called "API Keys"). You need the **Project URL** and the **anon / public** key. Never use the `service_role` / secret key in this app.
@@ -25,6 +25,16 @@ Go to [aistudio.google.com/apikey](https://aistudio.google.com/apikey), sign in 
    | `SUPABASE_URL` | your Supabase Project URL | any |
    | `SUPABASE_ANON_KEY` | your Supabase publishable key (`sb_publishable_…`) | any |
    | `GEMINI_API_KEY` | your Gemini key | Secret |
+
+   For processing on the server (keeps going with Lengible closed), also add:
+
+   | Name | Value | Type |
+   |---|---|---|
+   | `SUPABASE_SERVICE_ROLE_KEY` | Supabase → Project Settings → API keys → **secret** key (`sb_secret_…`) | Secret |
+   | `CRON_SECRET` | any long random password you make up | Secret |
+
+   Then open `supabase/setup_worker.sql`, put in your site address and that `CRON_SECRET`, and run it once in the SQL Editor:
+   Supabase then asks Lengible to carry on processing every minute.
 
    Optional, to use Claude or ChatGPT instead of Gemini (for everything, or only for Ally):
 
@@ -96,6 +106,22 @@ public/sw.js          service worker (install + offline)
 6. Course intelligence
 7. Pathology picture tests and on-request diagrams
 
+## Processing on the server
+
+Every file you upload or bring in from Drive goes into a queue that is worked on the server (every minute by Supabase's
+scheduler, and straight away while Lengible is open), so it keeps going with Lengible closed. Each file goes through: copy from
+Drive → read the text (PDF, PowerPoint, Word, text) → AI reads picture-only pages → topics, drugs and diseases → what the file is
+(course, set like 2K23, lecture/practical/past questions, exam, year, lecturer, topics) → its past questions → search indexing.
+Every step saves its place: **Pause**, **Stop**, **Resume** and **Retry** (in the corner panel, per file or for everything) and
+network problems carry on from the step where it stopped, and a file that's already processed is never processed again unless it
+changes. With a paid Gemini key, several files are processed at once.
+
+**Past questions** (sidebar): every question from MB, EOPT, resit and test papers, with how often each one came back (in any
+wording) and in which exams and sets, plus which topics come up every set.
+
+**Reading view**: tap **Read** on a file, or **Select** files in a folder and tap **Read selected**: the slides (or Google's viewer
+for linked PowerPoints) or a clean text view page by page, with text size, and it remembers where you stopped.
+
 ## Ask Ally and quizzes from your slides
 
 **Ally** is Lengible's study assistant (sidebar → Ask Ally, and a small Ask Ally box on every course, Library folder and file page).
@@ -105,7 +131,9 @@ plans the search from your question and how your files are grouped (course / fol
 drug or disease names, the files that fit, and any slides you name ("slides 10–20 of the anaemia lecture"). Lengible then searches
 the text and ranks the pages, and Ally answers from the best ones with numbered sources that open the exact slide. "Which slides
 cover…" lists where something is; "quiz me on…" builds a quiz written only from those slides. Files not processed yet aren't
-searched. Each question uses two AI calls (provider: `ALLY_PROVIDER`).
+searched. Ally also finds pages by meaning (not only matching words), reasons through **clinical cases** across all your courses
+(diagnosis, investigations, management, and how the courses link), and answers questions about **past papers** from the question
+bank ("how many times has sickle cell come up in MB essays?"). Each question uses two AI calls (provider: `ALLY_PROVIDER`).
 
 **Quiz me on this file / folder**: on a file page (optionally slides from–to) or a Library folder; questions come only from that material.
 

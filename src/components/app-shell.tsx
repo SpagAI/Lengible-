@@ -43,7 +43,8 @@ export function AppShell({ children, email }: { children: React.ReactNode; email
   const pathname = usePathname();
   const primary = navItems.filter((i) => i.primary);
   const moreActive = pathname.startsWith("/more") || navItems.some((i) => !i.primary && !i.disabled && isActive(pathname, i.href));
-  const fullBleed = pathname === "/ally" || pathname.startsWith("/ally/");
+  // Ask Ally and the reading view fill the screen.
+  const fullBleed = pathname === "/ally" || pathname.startsWith("/ally/") || pathname === "/read";
   const toggle = () => setSidebarCollapsed(document.documentElement.dataset.sidebar !== "collapsed");
 
   return (

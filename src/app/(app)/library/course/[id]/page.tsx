@@ -6,7 +6,7 @@ import { requireUser } from "@/lib/supabase/server";
 import { getCourses } from "@/lib/courses";
 import { courseFromParam, folderPath } from "@/lib/library";
 import { PageHeader, Card, EmptyState } from "@/components/ui";
-import { FileRow } from "@/components/library/file-row";
+import { SelectableFiles } from "@/components/library/selectable-files";
 import { ProcessBar } from "@/components/library/process-bar";
 import { SearchBox } from "@/components/library/search-box";
 import { LibraryToolbar } from "@/components/library/toolbar";
@@ -148,11 +148,7 @@ export default async function CourseLibraryPage({ params, searchParams }: PagePr
       <div className="mt-4">
         <ProcessBar files={waiting} />
         {files?.length ? (
-          <Card className="divide-y divide-border p-0">
-            {(files as LibraryFile[]).map((f) => (
-              <FileRow key={f.id} file={f} />
-            ))}
-          </Card>
+          <SelectableFiles files={files as LibraryFile[]} label={current?.name ?? title} />
         ) : (
           !subfolders.length && !children.length && <EmptyState title="Empty">Tap Upload to add files, or New folder to organise them.</EmptyState>
         )}
