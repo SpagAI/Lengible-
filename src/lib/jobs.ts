@@ -4,7 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, FileStatus, LibraryFile } from "@/lib/supabase/types";
 import { AIError, generateJSON } from "@/lib/ai";
 import { analyzeStep, type Analysis, ANALYSIS_VERSION } from "@/lib/analysis/run";
-import { download, isDrivePath } from "@/lib/drive";
+import { download, isDrivePath, isOfficeTemp, unsupportedReason } from "@/lib/drive";
 import { parsePartsPath, partPaths } from "@/lib/library";
 import { importDriveItem, markDriveItemDone } from "@/lib/drive-import";
 import { extractAny, extractPdf } from "@/lib/extract/server";
@@ -198,6 +198,8 @@ export const MAX_OPEN = 3;
 // A started file's priority is lifted by this much, so it stays ahead of files that haven't started.
 export const STARTED = 1_000_000_000;
 export const isStarted = (priority: number) => priority >= STARTED / 2;
+// Files only waiting for search indexing go behind every file still to be processed (and don't hold a place).
+const INDEX_LATER = -STARTED / 4;
 
 export async function workQueue(supabase: DB, userId: string, deadline: number, parallel = MAX_OPEN) {
   await orderBySize(supabase).catch(() => {});
@@ -390,6 +392,7 @@ const aiWait = (e: unknown): Outcome | null =>
     : null;
 
 async function advance(supabase: DB, job: ProcessJob, deadline: number): Promise<Outcome> {
+  if (isOfficeTemp(job.name)) return { fail: unsupportedReason("", job.name)! };
   switch (job.step) {
     case "copy": {
       if (!job.drive_item_id) return { next: "text" };
@@ -564,13 +567,17 @@ async function advance(supabase: DB, job: ProcessJob, deadline: number): Promise
         const r = await embedStep(supabase, file, deadline);
         if (!r.finished) return { progress: { done: r.done, total: r.total } };
       } catch (e) {
-        // Google's limit for indexing is mostly per minute: wait about a minute, not five.
+        // Google's limit for indexing was reached. The file is already usable (readable, searchable by words,
+        // questions saved), so it counts as in your Library now and gives up its place to the next file;
+        // search-by-meaning indexing is finished later, after the files still waiting.
         if (e instanceof AIError && (e.kind === "rate_limit" || e.kind === "busy")) {
+          if (job.drive_item_id) await markDriveItemDone(supabase, job.drive_item_id);
           return {
             wait: {
               ms: 75_000,
-              note: "Google's per-minute limit for search indexing was reached. The file is already readable and searchable by words; indexing for search by meaning carries on in about a minute.",
+              note: "Ready to use. Google's limit for search indexing was reached, so search by meaning is added later, after the other files.",
             },
+            patch: { priority: INDEX_LATER },
           };
         }
         throw e;

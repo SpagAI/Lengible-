@@ -59,12 +59,18 @@ const READABLE_MIME = [
   "text/csv",
 ];
 
+// Word/PowerPoint/Excel leave "~$name.docx" (and LibreOffice ".~lock.name#") files behind while a document is open:
+// tiny lock files, not documents.
+export const isOfficeTemp = (name: string) => /^~\$|^\.~lock\./.test(name);
+
 export function isSupported(mime: string, name: string) {
+  if (isOfficeTemp(name)) return false;
   return EXPORT_AS_PDF.has(mime) || mime === SHEET || SUPPORTED.includes(mime) || READABLE_MIME.includes(mime) || mime.startsWith("image/") || READABLE.test(name);
 }
 // Why a file can't be read, in plain words (or null when it can).
 export function unsupportedReason(mime: string, name: string) {
   if (isSupported(mime, name)) return null;
+  if (isOfficeTemp(name)) return "Not a real document: Office makes this temporary file while the document is open. The real file is the one without ~$ at the start.";
   if (/\.xls$/i.test(name) || mime === "application/vnd.ms-excel") return "Old .xls spreadsheet: save it as .xlsx (or a Google Sheet) to include it.";
   if (mime.startsWith("video/") || mime.startsWith("audio/")) return "Videos and audio aren't read.";
   if (mime === "application/vnd.google-apps.form" || mime === "application/vnd.google-apps.site") return "Google Forms and Sites can't be read.";
@@ -398,6 +404,8 @@ export async function syncItems(supabase: DB, source: DriveSource) {
     // Big files used to be refused; they're linked now.
     if (old.error && /50 MB limit/.test(old.error) && old.status !== "imported") Object.assign(update, { error: null, ...(old.status === "error" ? { status: "new" } : {}) });
     // Kinds of file that couldn't be read before (old .ppt/.doc, spreadsheets…) can be now.
+    if (isOfficeTemp(f.name) && old.status !== "skipped" && old.status !== "imported")
+      Object.assign(update, { status: "skipped", error: unsupportedReason(f.mime, f.name) });
     if (old.status === "skipped" && !unsupportedReason(f.mime, f.name)) Object.assign(update, { status: "new", error: null });
     if (Object.keys(update).length) updates.push({ id: old.id, update });
   }
