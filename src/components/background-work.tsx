@@ -48,6 +48,7 @@ export type ServerJob = {
   step: string;
   percent: number;
   running: boolean;
+  started?: boolean;
   waitingUntil: string | null;
   note: string | null;
   error: string | null;
@@ -543,7 +544,9 @@ function Dock({
                                 ? j.note ?? "Waiting to carry on"
                                 : j.running
                                   ? `${STEP_TEXT[j.step] ?? j.step}${j.total ? ` · ${j.done ?? 0} of ${j.total}` : ""}`
-                                  : "In the queue"}
+                                  : j.started
+                                    ? `Carrying on with “${STEP_TEXT[j.step] ?? j.step}”`
+                                    : "Waiting its turn (3 files at a time, smallest first)"}
                     </span>
                   </span>
                 </button>

@@ -189,32 +189,68 @@ const MAX_ATTEMPTS = 6;
 const iso = (ms: number) => new Date(ms).toISOString();
 
 // Works on a user's queue until the deadline: up to `parallel` files at once.
-export async function workQueue(supabase: DB, userId: string, deadline: number, parallel = 3) {
+// At most 3 files are worked on at once. A file that has started keeps its place until it's finished (even
+// while it waits for a time limit or the AI allowance, carrying on where it stopped); a new file, smallest
+// first, starts only when one of the three finishes, fails, or you pause or stop it.
+export const MAX_OPEN = 3;
+// A started file's priority is lifted by this much, so it stays ahead of files that haven't started.
+export const STARTED = 1_000_000_000;
+export const isStarted = (priority: number) => priority >= STARTED / 2;
+
+export async function workQueue(supabase: DB, userId: string, deadline: number, parallel = MAX_OPEN) {
   await orderBySize(supabase).catch(() => {});
   const done: string[] = [];
   const running = new Set<Promise<void>>();
+  const take = async (j: ProcessJob, now: string) => {
+    // One conditional update: if another worker took it first, nothing changes.
+    const { data: got } = await supabase
+      .from("process_jobs")
+      .update({ locked_until: iso(Date.now() + LOCK_MS), priority: isStarted(j.priority) ? j.priority : j.priority + STARTED })
+      .eq("id", j.id)
+      .eq("state", "queued")
+      .or(`locked_until.is.null,locked_until.lt.${now}`)
+      .select("*");
+    return (got?.[0] as ProcessJob | undefined) ?? null;
+  };
   const claim = async () => {
     const now = new Date().toISOString();
-    const { data: ready } = await supabase
+    const ready = (j: Pick<ProcessJob, "not_before" | "locked_until">) => (!j.not_before || j.not_before < now) && (!j.locked_until || j.locked_until < now);
+    // Files already started come first.
+    const { data: open } = await supabase
       .from("process_jobs")
       .select("*")
       .eq("user_id", userId)
       .eq("state", "queued")
+      .gte("priority", STARTED / 2)
+      .order("priority", { ascending: false })
+      .order("created_at");
+    for (const j of ((open ?? []) as ProcessJob[]).filter(ready)) {
+      const got = await take(j, now);
+      if (got) return got;
+    }
+    // A free place: start the next file (smallest first).
+    if ((open ?? []).length >= MAX_OPEN) return null;
+    const { data: next } = await supabase
+      .from("process_jobs")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("state", "queued")
+      .lt("priority", STARTED / 2)
       .or(`not_before.is.null,not_before.lt.${now}`)
       .or(`locked_until.is.null,locked_until.lt.${now}`)
       .order("priority", { ascending: false })
       .order("created_at")
-      .limit(parallel * 2);
-    for (const j of ready ?? []) {
-      // One conditional update: if another worker took it first, nothing changes.
-      const { data: got } = await supabase
-        .from("process_jobs")
-        .update({ locked_until: iso(Date.now() + LOCK_MS) })
-        .eq("id", j.id)
-        .eq("state", "queued")
-        .or(`locked_until.is.null,locked_until.lt.${now}`)
-        .select("*");
-      if (got?.[0]) return got[0] as ProcessJob;
+      .limit(6);
+    for (const j of (next ?? []) as ProcessJob[]) {
+      const got = await take(j, now);
+      if (!got) continue;
+      // Two runs may have started a file at the same moment: if that makes more than 3, put this one back.
+      const { count } = await supabase.from("process_jobs").select("id", { count: "exact", head: true }).eq("user_id", userId).eq("state", "queued").gte("priority", STARTED / 2);
+      if ((count ?? 0) > MAX_OPEN) {
+        await supabase.from("process_jobs").update({ locked_until: null, priority: j.priority }).eq("id", j.id);
+        return null;
+      }
+      return got;
     }
     return null;
   };

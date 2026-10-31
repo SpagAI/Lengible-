@@ -41,7 +41,7 @@ export async function POST(req: NextRequest) {
             if (r.items.length) queued += (await enqueue(supabase, r.items.map((i) => ({ driveItemId: i.id, name: i.changed ? `${i.name} (newer version)` : i.name, again: i.changed })))).added;
             queued += (await backfill(supabase)).added;
           }
-          return { queued, ...(await workQueue(supabase, userId, deadline, 4)) };
+          return { queued, ...(await workQueue(supabase, userId, deadline)) };
         });
       } catch (e) {
         report[userId] = { error: e instanceof Error ? e.message : "failed" };

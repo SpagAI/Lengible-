@@ -18,6 +18,6 @@ export async function POST() {
     lastScan.set(auth.user.id, Date.now());
     queued = (await backfill(supabase).catch(() => ({ added: 0 }))).added;
   }
-  const r = await workQueue(supabase, auth.user.id, Date.now() + 105_000, 3);
+  const r = await workQueue(supabase, auth.user.id, Date.now() + 105_000);
   return NextResponse.json({ ...r, queued });
 }

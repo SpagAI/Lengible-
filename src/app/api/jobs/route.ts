@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { enqueue, jobPercent, type ProcessJob } from "@/lib/jobs";
+import { enqueue, isStarted, jobPercent, type ProcessJob } from "@/lib/jobs";
 import { isMissingTable } from "@/lib/drugs";
 
 // The processing queue: GET lists your jobs (running and recent), POST adds files or pauses/resumes/stops/retries.
@@ -49,6 +49,8 @@ export async function GET() {
       percent: jobPercent(job),
       // Being worked on right now (claimed by a worker).
       running: job.state === "queued" && !!job.locked_until && new Date(job.locked_until).getTime() > now,
+      // One of the (at most 3) files being worked on; the rest wait their turn.
+      started: isStarted(job.priority),
       waitingUntil: job.not_before && new Date(job.not_before).getTime() > now ? job.not_before : null,
       note: job.note,
       error: job.error,
