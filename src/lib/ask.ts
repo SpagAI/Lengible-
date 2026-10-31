@@ -1,18 +1,22 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, QuizMaterials } from "@/lib/supabase/types";
-import { AIError, generateJSON } from "@/lib/ai";
+import { AIError, embedTexts, generateJSON, toVector } from "@/lib/ai";
 
 type DB = SupabaseClient<Database>;
 
 // Ask Ally: answers a question from your own materials, citing the exact file and slide/page.
 // 1. The AI looks at how your files are grouped (folders, file names) and the question, and plans the search:
 //    search words (with synonyms, drug and disease names), the files that clearly fit, and any slides you named.
-// 2. Lengible searches the text of those files (and everything else in scope) and ranks the pages.
+// 2. Lengible searches the text of those files (and everything else in scope) by words and by meaning, and ranks
+//    the pages. A clinical case searches across all courses, so pathology, pharmacology and the rest connect.
 // 3. The AI answers from the best pages, with [n] marks pointing at them, and says when your slides don't cover it.
+//    Questions about past papers ("how many times has … come up in MB?") are answered from the question bank.
 
 export type AskScope = { courseId?: string | null; folderId?: string | null; fileId?: string | null };
 export type AskTurn = { q: string; a: string };
+export type Intent = "answer" | "find" | "quiz" | "case" | "questions";
+export type PastHit = { question: string; times: number; when: string[]; file_id: string; page: number | null; format: string };
 export type AskSource = { n: number; file_id: string; file_name: string; path: string; page: number; text: string };
 export type AskResult = {
   answer: string;
@@ -20,7 +24,9 @@ export type AskResult = {
   // Sources the AI says are most worth reading.
   best: number[];
   follow_ups: string[];
-  intent: "answer" | "find" | "quiz";
+  intent: Intent;
+  // Past questions on this (from the question bank): how often each came up, and when.
+  past: PastHit[];
   // Ready-made quiz scope from the slides found (or that you named).
   quiz: { materials: QuizMaterials; count: number } | null;
   // Files in scope that are stored but not processed yet (their text can't be searched).
@@ -98,7 +104,7 @@ async function scopeFiles(supabase: DB, scope: AskScope) {
 }
 
 type Plan = {
-  intent: "answer" | "find" | "quiz";
+  intent: Intent;
   keywords: string[];
   files: number[];
   pages: { file: number; from: number; to: number }[];
@@ -108,7 +114,14 @@ type Plan = {
 const planSchema = {
   type: "object",
   properties: {
-    intent: { type: "string", enum: ["answer", "find", "quiz"], description: "answer = explain/answer; find = which files or slides cover something; quiz = the student wants to be quizzed" },
+    intent: {
+      type: "string",
+      enum: ["answer", "find", "quiz", "case", "questions"],
+      description:
+        "answer = explain/answer; find = which files or slides cover something; quiz = the student wants to be quizzed; " +
+        "case = a clinical scenario/patient to reason through (diagnosis, investigations, treatment); " +
+        "questions = about past exam questions (what came up, how often, in which MB/EOPT/resit or set)",
+    },
     keywords: {
       type: "array",
       items: { type: "string" },
@@ -153,6 +166,7 @@ export async function ask(supabase: DB, question: string, scope: AskScope, histo
       best: [],
       follow_ups: [],
       intent: "answer",
+      past: [],
       quiz: null,
       unread,
       scopeLabel: label,
@@ -215,6 +229,30 @@ export async function ask(supabase: DB, question: string, scope: AskScope, histo
       }
     }
   }
+  // By meaning: pages about the same thing in other words ("bone pain, anaemia, renal failure" finds myeloma).
+  // A clinical case looks across all courses, so knowledge from each one can be joined up.
+  const similarityOf = new Map<string, number>();
+  const caseMode = plan.intent === "case";
+  try {
+    const [qv] = (await embedTexts([`${question}\n${terms.join(", ")}`], "RETRIEVAL_QUERY")) ?? [];
+    if (qv?.length) {
+      const courseIds = [...new Set(readable.map((f) => f.course_id).filter(Boolean))] as string[];
+      const fileIds = scope.fileId || scope.folderId ? [...readableIds].slice(0, 2000) : null;
+      const { data } = await supabase.rpc("match_chunks", {
+        query_embedding: toVector(qv),
+        match_count: caseMode ? 60 : 40,
+        course_ids: scope.courseId && !caseMode ? courseIds : null,
+        file_ids: caseMode && !scope.fileId ? null : fileIds,
+      });
+      for (const r of data ?? []) {
+        if (r.similarity < 0.25) continue;
+        similarityOf.set(r.id, r.similarity);
+        if (readableIds.has(r.file_id) || caseMode) found.set(r.id, { id: r.id, file_id: r.file_id, page: r.page, content: r.content });
+      }
+    }
+  } catch {
+    // Search by meaning is a bonus; word search still works without it.
+  }
   // Files picked by name but with no word matches (e.g. "summarise lecture 3"): take pages spread through them.
   for (const id of [...pickedFiles].slice(0, 3)) {
     if ([...found.values()].some((c) => c.file_id === id)) continue;
@@ -239,6 +277,8 @@ export async function ask(supabase: DB, question: string, scope: AskScope, histo
     let s = 0;
     for (const t of terms) if (text.includes(t)) s += Math.log(1 + chunks.length / (df.get(t) || 1)) * (t.includes(" ") ? 1.5 : 1);
     if (pickedFiles.has(c.file_id)) s += 3;
+    // Close in meaning counts as much as several matching words.
+    s += (similarityOf.get(c.id) ?? 0) * 12;
     if (named(c)) s += 100;
     if (c.content.length < 80) s -= 1;
     // Timetables and topic lists name topics but don't teach them.
@@ -257,9 +297,15 @@ export async function ask(supabase: DB, question: string, scope: AskScope, histo
     if (chosen.length >= MAX_EXCERPTS) break;
   }
   const fileById = new Map(files.map((f) => [f.id, f]));
+  const outside = [...new Set(chosen.map((c) => c.file_id).filter((id) => !fileById.has(id)))];
+  if (outside.length) {
+    const { data } = await supabase.from("files").select("id, name, folder_id, course_id, doc_type, page_count, status").in("id", outside);
+    for (const f of (data ?? []) as FileRow[]) fileById.set(f.id, f);
+  }
+  const courseOfFile = (id: string) => courseName.get(fileById.get(id)?.course_id ?? "") ?? "";
   const sources: AskSource[] = chosen.map((c, i) => {
-    const f = fileById.get(c.file_id)!;
-    return { n: i + 1, file_id: c.file_id, file_name: f.name, path: pathOf(f.folder_id), page: c.page, text: c.content.replace(/\s+/g, " ").trim() };
+    const f = fileById.get(c.file_id);
+    return { n: i + 1, file_id: c.file_id, file_name: f?.name ?? "File", path: [courseOfFile(c.file_id), pathOf(f?.folder_id ?? null)].filter(Boolean).join(" / "), page: c.page, text: c.content.replace(/\s+/g, " ").trim() };
   });
 
   // Slides for a quiz: the ones you named, else the pages found (grouped into ranges per file).
@@ -273,13 +319,16 @@ export async function ask(supabase: DB, question: string, scope: AskScope, histo
   const quizLabel = quizFiles.map((f) => `${fileById.get(f.id)?.name ?? "file"} (slides ${f.from}–${f.to})`).join(", ");
   const quiz = quizFiles.length ? { materials: { label: quizLabel, files: quizFiles, folder_ids: [] }, count: Math.max(3, Math.min(30, plan.quiz_count || 10)) } : null;
 
-  if (!sources.length) {
+  const past = await pastQuestions(supabase, question, terms, plan.intent === "questions" ? 25 : 8, scope.courseId ? [...new Set(readable.map((f) => f.course_id).filter(Boolean))] as string[] : null);
+
+  if (!sources.length && !(plan.intent === "questions" && past.length)) {
     return {
       answer: `I couldn't find this in your processed files${label === "All your materials" ? "" : ` in ${label}`}. Try other words (e.g. a drug or disease name), ask in a wider scope, or process more files.`,
       sources,
       best: [],
       follow_ups: [],
       intent: plan.intent,
+      past,
       quiz: null,
       unread,
       scopeLabel: label,
@@ -292,6 +341,7 @@ export async function ask(supabase: DB, question: string, scope: AskScope, histo
       best: sources.slice(0, 5).map((s) => s.n),
       follow_ups: [],
       intent: "quiz",
+      past,
       quiz,
       unread,
       scopeLabel: label,
@@ -304,7 +354,18 @@ export async function ask(supabase: DB, question: string, scope: AskScope, histo
       `Question: ${question}\n\n` +
       (plan.intent === "find"
         ? "The student wants to know WHERE this is covered: name the files and slides (with [n]) and say in a line what each covers.\n\n"
-        : "Answer for exam revision: accurate, clear and to the point, using the excerpts.\n\n") +
+        : plan.intent === "case"
+          ? "This is a clinical case. Reason through it like a good clinician teaching a student, using the excerpts: the most likely diagnosis and why " +
+            "(the key clues), differentials, investigations and the expected findings, and management (drugs with their mechanism and key side effects). " +
+            "Join up knowledge across courses (e.g. Haematology + Chemical Pathology + Pharmacology + Microbiology), and say which course each piece comes from. " +
+            "Use headings: Diagnosis, Differentials, Investigations, Management, Linking it together.\n\n"
+          : plan.intent === "questions"
+            ? "The student asks about past exam questions. Use the PAST QUESTIONS list (how many times each came up and when) to answer: what comes up, " +
+              "how often, in which exams/sets, and what that suggests to focus on. Mention the excerpts only where they help answer those questions.\n\n"
+            : "Answer for exam revision: accurate, clear and to the point, using the excerpts. Where useful, link to related courses (e.g. the drug for a disease).\n\n") +
+      (past.length
+        ? `PAST QUESTIONS from the student's papers (times asked; when):\n${past.map((p) => `- (${p.times}×; ${p.when.join(", ")}) ${p.question}`).join("\n")}\n\n`
+        : "") +
       `Excerpts from the student's own slides and notes:\n${sources.map((s) => `[${s.n}] ${[s.path, s.file_name].filter(Boolean).join(" / ")}, page ${s.page}\n${s.text.slice(0, 1800)}`).join("\n\n")}`,
     answerSchema,
     {
@@ -322,8 +383,45 @@ export async function ask(supabase: DB, question: string, scope: AskScope, histo
     best: (out.best ?? []).filter(valid).slice(0, 5),
     follow_ups: (out.follow_ups ?? []).slice(0, 3),
     intent: plan.intent,
+    past,
     quiz,
     unread,
     scopeLabel: label,
   };
+}
+
+const EXAM_NAME: Record<string, string> = { mb: "MB", eopt: "EOPT", resit: "Resit", test: "Test", departmental: "Departmental", other: "Paper" };
+
+// Past questions on the subject (by meaning when possible, else by words), grouped with their repeats.
+async function pastQuestions(supabase: DB, question: string, terms: string[], limit: number, courseIds: string[] | null): Promise<PastHit[]> {
+  try {
+    const clusters = new Set<string>();
+    const [qv] = (await embedTexts([question], "SEMANTIC_SIMILARITY").catch(() => null)) ?? [];
+    if (qv?.length) {
+      const { data } = await supabase.rpc("match_questions", { query_embedding: toVector(qv), match_count: limit * 2, in_course: null });
+      for (const r of data ?? []) if (r.similarity >= 0.3 && r.cluster_id) clusters.add(r.cluster_id);
+    }
+    if (clusters.size < limit && terms.length) {
+      const words = terms.filter((t) => !t.includes(" ")).slice(0, 6);
+      if (words.length) {
+        const { data } = await supabase.from("exam_questions").select("cluster_id").or(words.map((w) => `question.ilike.%${w.replace(/[%,()]/g, "")}%`).join(",")).limit(200);
+        for (const r of data ?? []) if (r.cluster_id) clusters.add(r.cluster_id);
+      }
+    }
+    if (!clusters.size) return [];
+    let q = supabase.from("exam_questions").select("question, exam, class_set, exam_year, file_id, page, format, cluster_id, course_id").in("cluster_id", [...clusters].slice(0, 200));
+    if (courseIds?.length) q = q.in("course_id", courseIds);
+    const { data: rows } = await q.limit(2000);
+    const groups = new Map<string, NonNullable<typeof rows>>();
+    for (const r of rows ?? []) groups.set(r.cluster_id!, [...(groups.get(r.cluster_id!) ?? []), r]);
+    return [...groups.values()]
+      .map((list) => {
+        const when = [...new Set(list.map((r) => `${EXAM_NAME[r.exam] ?? r.exam} ${r.class_set ?? r.exam_year ?? ""}`.trim()))];
+        return { question: list[0].question, times: when.length, when, file_id: list[0].file_id, page: list[0].page, format: list[0].format };
+      })
+      .sort((a, b) => b.times - a.times)
+      .slice(0, limit);
+  } catch {
+    return [];
+  }
 }

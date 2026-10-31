@@ -35,11 +35,14 @@ export function AllyChat({
   chats,
   chat,
   historyMissing,
+  initialText = "",
 }: {
   scopes: ScopeChoice[];
   chats: ChatSummary[];
   chat?: { id: string; turns: Turn[]; scope: AskScope; scopeLabel: string } | null;
   historyMissing?: boolean;
+  // Put in the message box (not sent), e.g. a past question from the question bank.
+  initialText?: string;
 }) {
   const router = useRouter();
   const [sidebar, setSidebar] = useState(false);
@@ -49,7 +52,7 @@ export function AllyChat({
   const scope = chat?.scope ?? scopes[pick]?.scope ?? {};
   const scopeLabel = chat?.scopeLabel ?? scopes[pick]?.label ?? "All my materials";
   const { turns, send, busy, chatId, notSaved } = useAllyChat({ scope, scopeLabel, initial: chat ? { id: chat.id, turns: chat.turns } : undefined });
-  const [text, setText] = useState("");
+  const [text, setText] = useState(initialText);
   const input = useRef<HTMLTextAreaElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
 

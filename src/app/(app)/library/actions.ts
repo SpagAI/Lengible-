@@ -117,3 +117,15 @@ export async function deleteFile(fd: FormData) {
   revalidatePath("/library", "layout");
   redirect(`/library/course/${courseParam(file?.course_id ?? null)}${file?.folder_id ? `?folder=${file.folder_id}` : ""}`);
 }
+
+// Your correction of what a file is (course, set, kind, exam, year…). The AI won't change it again.
+export async function saveFileProfile(id: string, profile: import("@/lib/supabase/types").FileProfile) {
+  const { supabase } = await requireUser();
+  const clean = { ...profile, set: profile.set?.trim().toUpperCase().replace(/\s+/g, "") || null, edited: true };
+  await supabase.from("files").update({ profile: clean }).eq("id", id);
+  // Past questions keep the paper's exam, set and year.
+  if (clean.kind === "past_questions") {
+    await supabase.from("exam_questions").update({ exam: clean.exam ?? "other", class_set: clean.set, exam_year: clean.exam_year }).eq("file_id", id);
+  }
+  revalidatePath(`/library/file/${id}`);
+}

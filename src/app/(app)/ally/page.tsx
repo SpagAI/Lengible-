@@ -37,6 +37,7 @@ export default async function AllyPage({ searchParams }: PageProps<"/ally">) {
       scopes={scopes}
       chats={chats ?? []}
       historyMissing={!!error && isMissingTable(error)}
+      initialText={typeof sp.q === "string" ? sp.q.slice(0, 2000) : ""}
       chat={chat ? { id: chat.id, turns: chat.messages as Turn[], scope: chat.scope as AskScope, scopeLabel: chat.scope_label ?? "All my materials" } : null}
     />
   );

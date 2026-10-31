@@ -1,4 +1,4 @@
-import { Home, BookOpen, FolderOpen, ListChecks, Layers, Pill, BarChart3, Sparkles, Stethoscope, type LucideIcon } from "lucide-react";
+import { Home, BookOpen, FolderOpen, ListChecks, Layers, Pill, BarChart3, Sparkles, Stethoscope, Repeat2, type LucideIcon } from "lucide-react";
 
 export type NavItem = {
   href: string;
@@ -18,6 +18,7 @@ export const navItems: NavItem[] = [
   { href: "/ally", label: "Ask Ally", short: "Ally", icon: Sparkles },
   { href: "/quiz", label: "Quiz", short: "Quiz", icon: ListChecks, primary: true },
   { href: "/drugs", label: "Drugs", short: "Drugs", icon: Pill, primary: true },
+  { href: "/questions", label: "Past questions", short: "Past Qs", icon: Repeat2 },
   { href: "/flashcards", label: "Flashcards", short: "Cards", icon: Layers },
   { href: "/progress", label: "Progress", short: "Progress", icon: BarChart3 },
   { href: "/clinic", label: "Emiloju (Clinic)", short: "Clinic", icon: Stethoscope, disabled: true, note: "Coming soon" },

@@ -15,8 +15,8 @@ export type Turn = { q: string; result?: AskResult; error?: string };
 
 export const EXAMPLES = [
   "Explain the mechanism of action of warfarin from my slides",
-  "Which slides cover haemolytic anaemia?",
-  "Compare first-line TB drugs and their side effects",
+  "A 60-year-old with bone pain, anaemia and renal failure: what's going on and how is it managed?",
+  "How many times has sickle cell disease come up in MB essays?",
   "Quiz me on the antimicrobials slides",
 ];
 
@@ -123,6 +123,32 @@ export function Answer({ turn, onPick }: { turn: Turn; onPick: (q: string) => vo
             {r.quiz.materials.files.length === 1 ? "" : "s"}). For other formats or more questions, use Quiz → Build your own.
           </InfoTip>
           {quizError && <span className="text-sm text-danger">{quizError}</span>}
+        </div>
+      )}
+      {(r.past ?? []).length > 0 && (
+        <div>
+          <p className="mb-1.5 text-xs font-semibold tracking-wide text-muted uppercase">Past questions on this</p>
+          <ul className="space-y-1.5">
+            {r.past.slice(0, r.intent === "questions" ? 15 : 5).map((p) => (
+              <li key={p.question} className="rounded-xl border border-border px-3 py-2 text-sm">
+                <span className={cx("mr-2 inline-block rounded-md px-1.5 text-[11px] font-semibold", p.times > 1 ? "bg-brand text-on-brand" : "bg-surface-2 text-muted")}>{p.times}×</span>
+                {p.question}
+                <span className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted">
+                  {p.when.map((w) => (
+                    <span key={w} className="rounded-full bg-surface-2 px-2 py-0.5">
+                      {w}
+                    </span>
+                  ))}
+                  <Link href={`/library/file/${p.file_id}${p.page ? `?page=${p.page}` : ""}`} className="font-medium text-brand">
+                    Open paper
+                  </Link>
+                </span>
+              </li>
+            ))}
+          </ul>
+          <Link href="/questions" className="mt-1 inline-block text-xs font-medium text-brand">
+            All past questions and trends →
+          </Link>
         </div>
       )}
       {r.sources.length > 0 && (

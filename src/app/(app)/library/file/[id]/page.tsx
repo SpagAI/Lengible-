@@ -16,6 +16,7 @@ import { ProcessDetails } from "@/components/process-details";
 import { driveOpenUrl, drivePreviewUrl, isDrivePath } from "@/lib/drive";
 import { ProcessFileButton } from "@/components/library/process-bar";
 import { MaterialQuiz } from "@/components/quiz/material-quiz";
+import { ProfileCard } from "@/components/library/profile-card";
 import { AskPanel } from "@/components/ask/ask-panel";
 import type { Concept, LibraryFile } from "@/lib/supabase/types";
 
@@ -116,6 +117,8 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
         downloadUrl={download.data?.signedUrl ?? viewUrl}
         linked={linked ? { open: linked.open, download: linked.download } : undefined}
       />
+
+      {file.profile && <ProfileCard fileId={file.id} profile={file.profile} />}
 
       {/* Stored (e.g. from Drive) but not read yet: process it when you need it. */}
       {file.status === "uploaded" && (
