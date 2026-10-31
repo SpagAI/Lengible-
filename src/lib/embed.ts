@@ -5,14 +5,14 @@ import { canEmbed, embedTexts, toVector } from "@/lib/ai";
 
 type DB = SupabaseClient<Database>;
 
-// Indexes a file's pages for search by meaning, 50 pages per AI call; pages already indexed are skipped,
+// Indexes a file's pages for search by meaning, 25 pages per AI call (smaller calls stay under Google's per-minute limits); pages already indexed are skipped,
 // so it carries on where it stopped.
 export async function embedStep(supabase: DB, file: LibraryFile, deadline: number): Promise<{ finished: boolean; done: number; total: number }> {
   const { count: total } = await supabase.from("chunks").select("id", { count: "exact", head: true }).eq("file_id", file.id);
   // Without an embedding key, search by meaning is simply off (word search still works).
   if (!canEmbed()) return { finished: true, done: total ?? 0, total: total ?? 0 };
   for (;;) {
-    const { data: todo } = await supabase.from("chunks").select("id, page, content").eq("file_id", file.id).is("embedding", null).order("page").limit(50);
+    const { data: todo } = await supabase.from("chunks").select("id, page, content").eq("file_id", file.id).is("embedding", null).order("page").limit(25);
     if (!todo?.length) return { finished: true, done: total ?? 0, total: total ?? 0 };
     // The file's name and topics go with each page, so "warfarin slides" also finds pages that only say "INR".
     const header = `${file.name}${file.profile?.topics?.length ? ` — ${file.profile.topics.slice(0, 6).join(", ")}` : ""}`;

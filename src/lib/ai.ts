@@ -263,7 +263,7 @@ export async function embedTexts(texts: string[], task: EmbedTask): Promise<numb
       return null;
     } catch (err) {
       if (!isRetryable(err) || attempt >= aiConfig.maxRetries) {
-        if (statusOf(err) === 429) throw new AIError("You've used your AI allowance for search indexing for now. It carries on in a few minutes.", "rate_limit");
+        if (statusOf(err) === 429) throw new AIError("Google's per-minute limit for search indexing was reached. It carries on in about a minute.", "rate_limit");
         if (isRetryable(err)) throw new AIError("The AI servers are busy. Search indexing carries on in a few minutes.", "busy");
         throw err;
       }

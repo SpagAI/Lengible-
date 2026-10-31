@@ -473,8 +473,15 @@ async function advance(supabase: DB, job: ProcessJob, deadline: number): Promise
         const r = await embedStep(supabase, file, deadline);
         if (!r.finished) return { progress: { done: r.done, total: r.total } };
       } catch (e) {
-        const w = aiWait(e);
-        if (w) return w;
+        // Google's limit for indexing is mostly per minute: wait about a minute, not five.
+        if (e instanceof AIError && (e.kind === "rate_limit" || e.kind === "busy")) {
+          return {
+            wait: {
+              ms: 75_000,
+              note: "Google's per-minute limit for search indexing was reached. The file is already readable and searchable by words; indexing for search by meaning carries on in about a minute.",
+            },
+          };
+        }
         throw e;
       }
       return { finished: true };
