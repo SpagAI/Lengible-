@@ -359,7 +359,7 @@ function Dock({
   const [small, setSmall] = useState(() => store.get("lengible:dock-small"));
   const [openKey, setOpenKey] = useState<string | null>(null);
   // Width: drag the left edge (or tap Widen) to see full file names. Remembered on this device.
-  const NARROW = 400;
+  const NARROW = 380;
   const widest = () => (typeof window === "undefined" ? 1200 : Math.max(NARROW, window.innerWidth - 32));
   const [width, setWidth] = useState(() => {
     try {
@@ -387,7 +387,10 @@ function Dock({
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   };
-  const wide = width > NARROW + 40;
+  // The diagonal arrows step through three sizes: small → medium → large → small.
+  const sizes = { small: NARROW, medium: Math.min(680, widest()), large: widest() };
+  const size: keyof typeof sizes = width < (sizes.small + sizes.medium) / 2 ? "small" : width < (sizes.medium + sizes.large) / 2 ? "medium" : "large";
+  const nextSize = ({ small: "medium", medium: "large", large: "small" } as const)[size];
   const minimise = (v: boolean) => {
     setSmall(v);
     store.set("lengible:dock-small", v);
@@ -432,21 +435,19 @@ function Dock({
   }
 
   return (
-    <div
-      className={cx(position, "max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-2xl border border-border bg-surface/95 text-xs shadow-lg backdrop-blur")}
-      style={{ width }}
-    >
-      {/* Drag this edge to the left to widen the panel (to the right to narrow it). */}
+    <div className={cx(position, "max-w-[calc(100vw-1.5rem)]")} style={{ width }}>
+      {/* A handle on the left edge, outside the panel's content: drag it left to widen, right to narrow. */}
       <div
         onPointerDown={startDrag}
-        className="group absolute inset-y-0 left-0 z-10 flex w-3 cursor-ew-resize touch-none items-center justify-center hover:bg-brand/10"
+        className="group absolute top-1/2 -left-2.5 z-10 grid h-14 w-5 -translate-y-1/2 cursor-ew-resize touch-none place-items-center rounded-full border border-border bg-surface shadow-md hover:border-brand hover:bg-brand-soft"
         role="separator"
         aria-orientation="vertical"
         aria-label="Drag to resize the panel"
         title="Drag to widen or narrow"
       >
-        <GripVertical size={12} className="text-muted group-hover:text-brand" />
+        <GripVertical size={14} className="text-muted group-hover:text-brand" />
       </div>
+      <div className="overflow-hidden rounded-2xl border border-border bg-surface/95 text-xs shadow-lg backdrop-blur">
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
         {working ? <Loader2 size={14} className="animate-spin text-brand" /> : <Server size={14} className="text-brand" />}
         <span className="min-w-0 flex-1 font-semibold">
@@ -465,12 +466,12 @@ function Dock({
         {(summary?.total ?? server.length) > 0 && <ProgressPct pct={overall} label="All files in the queue" />}
         <button
           type="button"
-          onClick={() => saveWidth(wide ? NARROW : widest())}
+          onClick={() => saveWidth(sizes[nextSize])}
           className="grid size-7 place-items-center rounded-lg text-muted hover:bg-surface-2"
-          aria-label={wide ? "Make the panel narrow" : "Widen the panel"}
-          title={wide ? "Narrow" : "Widen to see full names"}
+          aria-label={`Panel size: ${size}. Change to ${nextSize}`}
+          title={`Size: ${size} (tap for ${nextSize})`}
         >
-          {wide ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+          {size === "large" ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
         </button>
         <button type="button" onClick={() => minimise(true)} className="grid size-7 place-items-center rounded-lg text-muted hover:bg-surface-2" aria-label="Minimise">
           <ChevronDown size={16} />
@@ -583,6 +584,7 @@ function Dock({
           <ChevronRight size={12} /> Clear finished ({finished})
         </button>
       )}
+      </div>
     </div>
   );
 }

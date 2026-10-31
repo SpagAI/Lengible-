@@ -88,6 +88,34 @@ async function hasQuestions(supabase: DB, fileId: string) {
   return (count ?? 0) > 0;
 }
 
+// Smallest files first: the queue runs highest priority first, so a file's priority is minus its size in KB
+// (a 2 MB file comes before a 40 MB one). Files of unknown size (e.g. Google Docs) count as small.
+export const sizeOrder = (bytes: number | null | undefined) => (bytes ? -Math.ceil(bytes / 1024) : -1);
+
+// Files queued before smallest-first existed (priority 0): give them their size order.
+export async function orderBySize(supabase: DB) {
+  const { data: jobs } = await supabase.from("process_jobs").select("id, file_id, drive_item_id").in("state", ["queued", "paused", "stopped"]).eq("priority", 0).limit(500);
+  if (!jobs?.length) return;
+  const fileIds = jobs.flatMap((j) => (j.file_id ? [j.file_id] : []));
+  const itemIds = jobs.flatMap((j) => (!j.file_id && j.drive_item_id ? [j.drive_item_id] : []));
+  const sizes = new Map<string, number | null>();
+  for (let k = 0; k < fileIds.length; k += 150) {
+    const { data } = await supabase.from("files").select("id, size_bytes").in("id", fileIds.slice(k, k + 150));
+    for (const f of data ?? []) sizes.set(f.id, f.size_bytes);
+  }
+  for (let k = 0; k < itemIds.length; k += 150) {
+    const { data } = await supabase.from("drive_items").select("id, size_bytes").in("id", itemIds.slice(k, k + 150));
+    for (const i of data ?? []) sizes.set(i.id, i.size_bytes);
+  }
+  // Files of the same size share one update.
+  const groups = new Map<number, string[]>();
+  for (const j of jobs) {
+    const v = sizeOrder(sizes.get(j.file_id ?? j.drive_item_id ?? "") ?? null);
+    groups.set(v, [...(groups.get(v) ?? []), j.id]);
+  }
+  for (const [v, ids] of groups) await supabase.from("process_jobs").update({ priority: v }).in("id", ids);
+}
+
 // Adds files to the queue. Files already fully processed are skipped (unless `again`), and a file part-way
 // through continues from its first unfinished step.
 export async function enqueue(
@@ -99,8 +127,10 @@ export async function enqueue(
   for (const it of items) {
     let step: JobStep = "copy";
     let fileId = it.fileId ?? null;
+    let size: number | null = null;
     if (!it.driveItemId || fileId) {
       const { data } = fileId ? await supabase.from("files").select("*").eq("id", fileId).maybeSingle() : { data: null };
+      size = (data as LibraryFile | null)?.size_bytes ?? null;
       step = it.again ? "text" : await firstStepFor(supabase, data as LibraryFile | null);
       if (!data) step = "copy";
       if (step === "done") {
@@ -110,7 +140,8 @@ export async function enqueue(
     }
     if (it.driveItemId && !it.fileId) {
       // A Drive file brought in before keeps its place; a newer version is copied again.
-      const { data: item } = await supabase.from("drive_items").select("status, file_id").eq("id", it.driveItemId).maybeSingle();
+      const { data: item } = await supabase.from("drive_items").select("status, file_id, size_bytes").eq("id", it.driveItemId).maybeSingle();
+      size = item?.size_bytes ?? null;
       if (item?.file_id && item.status === "imported" && !it.again) {
         fileId = item.file_id;
         const { data } = await supabase.from("files").select("*").eq("id", fileId).maybeSingle();
@@ -126,7 +157,7 @@ export async function enqueue(
     if (existing) {
       await supabase
         .from("process_jobs")
-        .update({ state: "queued", attempts: 0, error: null, note: null, not_before: null, updated_at: new Date().toISOString(), ...(it.again ? { step, progress: {} } : {}) })
+        .update({ state: "queued", attempts: 0, error: null, note: null, not_before: null, priority: it.priority ?? sizeOrder(size), updated_at: new Date().toISOString(), ...(it.again ? { step, progress: {} } : {}) })
         .eq("id", existing.id);
       added++;
       continue;
@@ -136,7 +167,7 @@ export async function enqueue(
       drive_item_id: it.driveItemId ?? null,
       name: it.name,
       step,
-      priority: it.priority ?? 0,
+      priority: it.priority ?? sizeOrder(size),
     });
     if (!error) added++;
   }
@@ -159,6 +190,7 @@ const iso = (ms: number) => new Date(ms).toISOString();
 
 // Works on a user's queue until the deadline: up to `parallel` files at once.
 export async function workQueue(supabase: DB, userId: string, deadline: number, parallel = 3) {
+  await orderBySize(supabase).catch(() => {});
   const done: string[] = [];
   const running = new Set<Promise<void>>();
   const claim = async () => {
