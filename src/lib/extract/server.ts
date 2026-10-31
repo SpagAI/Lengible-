@@ -82,14 +82,17 @@ export async function extractOffice(buf: Buffer, kind: "pptx" | "docx"): Promise
 // A page with less text than this is probably mostly a picture (read later by the AI).
 const PICTURE_PAGE_CHARS = 40;
 
-async function extractPdf(buf: Buffer) {
+// Reads a PDF's pages from `from` on. With `until` (a time), stops there and says where to carry on (`next`),
+// so a very long lecture can be read across several runs without starting again.
+export async function extractPdf(buf: Buffer, opts: { from?: number; until?: number } = {}) {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const task = pdfjs.getDocument({ data: new Uint8Array(buf), verbosity: 0 });
   const doc = await task.promise;
   const pages: ServerPage[] = [];
   const pictureOnly: number[] = [];
   try {
-    for (let i = 1; i <= doc.numPages; i++) {
+    for (let i = opts.from ?? 1; i <= doc.numPages; i++) {
+      if (opts.until && Date.now() > opts.until && pages.length + pictureOnly.length > 0) return { pages, pageCount: doc.numPages, pictureOnly, next: i };
       const page = await doc.getPage(i);
       const content = await page.getTextContent();
       let text = "";
@@ -99,7 +102,7 @@ async function extractPdf(buf: Buffer) {
       if (t.length < PICTURE_PAGE_CHARS) pictureOnly.push(i);
       page.cleanup();
     }
-    return { pages, pageCount: doc.numPages, pictureOnly };
+    return { pages, pageCount: doc.numPages, pictureOnly, next: null as number | null };
   } finally {
     await task.destroy();
   }

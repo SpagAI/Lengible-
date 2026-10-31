@@ -7,7 +7,7 @@ import { analyzeStep, type Analysis, ANALYSIS_VERSION } from "@/lib/analysis/run
 import { download, isDrivePath } from "@/lib/drive";
 import { parsePartsPath, partPaths } from "@/lib/library";
 import { importDriveItem, markDriveItemDone } from "@/lib/drive-import";
-import { extractAny } from "@/lib/extract/server";
+import { extractAny, extractPdf } from "@/lib/extract/server";
 import { profileStep, questionsStep, needsQuestions } from "@/lib/profile";
 import { embedStep } from "@/lib/embed";
 
@@ -35,7 +35,8 @@ export type ProcessJob = {
   name: string;
   state: JobState;
   step: JobStep;
-  progress: { done?: number; total?: number; pictures?: number[]; message?: string };
+  // textPage: for long PDFs, the next page to read (the text step saves its place every few pages).
+  progress: { done?: number; total?: number; pictures?: number[]; message?: string; textPage?: number };
   attempts: number;
   error: string | null;
   note: string | null;
@@ -201,7 +202,8 @@ export async function workQueue(supabase: DB, userId: string, deadline: number, 
   return { worked: done.length };
 }
 
-type Outcome = { next?: JobStep; progress?: ProcessJob["progress"]; wait?: { ms: number; note: string }; fail?: string; finished?: boolean; patch?: Partial<ProcessJob> };
+// handOver: stopped near the time limit with its place saved; the next run carries on from there.
+type Outcome = { handOver?: boolean; next?: JobStep; progress?: ProcessJob["progress"]; wait?: { ms: number; note: string }; fail?: string; finished?: boolean; patch?: Partial<ProcessJob> };
 
 async function runJob(supabase: DB, start: ProcessJob, deadline: number) {
   let job = start;
@@ -240,6 +242,7 @@ async function runJob(supabase: DB, start: ProcessJob, deadline: number) {
       await supabase.from("process_jobs").update(patch).eq("id", job.id);
       job = { ...job, ...patch } as ProcessJob;
       if (out.wait || out.fail || patch.state === "done") return;
+      if (out.handOver) break;
     }
   } catch (e) {
     // Something unexpected (network, server): try again later, from this same step.
@@ -321,18 +324,38 @@ async function advance(supabase: DB, job: ProcessJob, deadline: number): Promise
       const hash = createHash("sha256").update(buf).digest("hex");
       const stored = parsePartsPath(file.storage_path)?.base ?? file.storage_path;
       const name = /\.[a-z0-9]{2,5}$/i.test(stored) ? stored.split("/").pop()! : file.name;
-      const x = await extractAny(buf, name, file.mime_type ?? "");
-      // From the start of this step: replace any earlier text.
-      await Promise.all([
-        supabase.from("chunks").delete().eq("file_id", file.id),
-        supabase.from("file_concepts").delete().eq("file_id", file.id),
-        supabase.from("topic_files").delete().eq("file_id", file.id),
-        supabase.from("exam_questions").delete().eq("file_id", file.id),
-      ]);
-      for (let i = 0; i < x.pages.length; i += 200) {
-        const rows = x.pages.slice(i, i + 200).map((p) => ({ file_id: file.id, course_id: file.course_id, page: p.page, content: p.text.slice(0, 20000) }));
-        const { error } = await supabase.from("chunks").insert(rows);
-        if (error) throw new Error(`Couldn't save the text: ${error.message}`);
+      const resuming = (job.progress.textPage ?? 0) > 1;
+      // From the start of this step: replace any earlier text (not when carrying on part-way through a long PDF).
+      if (!resuming) {
+        await Promise.all([
+          supabase.from("chunks").delete().eq("file_id", file.id),
+          supabase.from("file_concepts").delete().eq("file_id", file.id),
+          supabase.from("topic_files").delete().eq("file_id", file.id),
+          supabase.from("exam_questions").delete().eq("file_id", file.id),
+        ]);
+      }
+      const save = async (pages: { page: number; text: string }[]) => {
+        for (let i = 0; i < pages.length; i += 200) {
+          const rows = pages.slice(i, i + 200).map((p) => ({ file_id: file.id, course_id: file.course_id, page: p.page, content: p.text.slice(0, 20000) }));
+          const { error } = await supabase.from("chunks").insert(rows);
+          if (error) throw new Error(`Couldn't save the text: ${error.message}`);
+        }
+      };
+      const isPdf = file.mime_type === "application/pdf" || /\.pdf$/i.test(name);
+      let x: Awaited<ReturnType<typeof extractAny>>;
+      if (isPdf) {
+        // Long PDFs: read until near the time limit, save, and carry on from the next page in the next run.
+        const from = job.progress.textPage ?? 1;
+        if (resuming) await supabase.from("chunks").delete().eq("file_id", file.id).gte("page", from);
+        const r = await extractPdf(buf, { from, until: deadline - 70_000 });
+        await save(r.pages);
+        const pictures = [...(job.progress.pictures ?? []), ...r.pictureOnly];
+        if (r.next) return { handOver: true, progress: { done: r.next - 1, total: r.pageCount, textPage: r.next, pictures } };
+        const { count } = await supabase.from("chunks").select("id", { count: "exact", head: true }).eq("file_id", file.id);
+        x = { pages: new Array(count ?? 0), pageCount: r.pageCount, pictureOnly: pictures, kind: "pdf" };
+      } else {
+        x = await extractAny(buf, name, file.mime_type ?? "");
+        await save(x.pages);
       }
       const pictures = x.kind === "pdf" || x.kind === "image" ? x.pictureOnly.slice(0, 600) : [];
       await supabase

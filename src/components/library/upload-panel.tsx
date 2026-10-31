@@ -110,6 +110,14 @@ export function UploadPanel({
         </Field>
       </div>
 
+      {items.some((i) => i.file.size > 50 * 1024 * 1024) && (
+        <p className="rounded-xl bg-warn/10 p-3 text-xs text-warn">
+          {items.filter((i) => i.file.size > 50 * 1024 * 1024).length === 1 ? "One file is" : "Some files are"} over 50 MB. They upload fine (stored in pieces,
+          nothing compressed), but use your Supabase storage (1 GB free). If they&apos;re in your class Google Drive, bring them in from there
+          instead: Library → Google Drive links. Drive files over 50 MB use no storage and are read whole.
+        </p>
+      )}
+
       {(items.length > 0 || mine.length > 0) && (
         <ul className="space-y-2">
           {mine.map((i) => (
