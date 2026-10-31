@@ -18,6 +18,21 @@ export class AIError extends Error {
   }
 }
 
+// A 429 for a per-day quota (not per-minute): waiting a few minutes won't help.
+export function isDailyLimit(err: unknown) {
+  const text = err instanceof Error ? `${err.message} ${JSON.stringify(err)}` : String(err);
+  return /PerDay|per day|daily/i.test(text);
+}
+export const isDailyMessage = (m: string | null | undefined) => /daily AI allowance/i.test(m ?? "");
+
+// Google's daily limits reset at midnight Pacific time. Milliseconds until then (plus a few minutes' margin).
+export function msUntilDailyReset(now = new Date()) {
+  const pacific = new Date(now.toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
+  const midnight = new Date(pacific);
+  midnight.setHours(24, 5, 0, 0);
+  return Math.max(5 * 60_000, midnight.getTime() - pacific.getTime());
+}
+
 export type GenerateOptions = {
   system?: string;
   // A JSON Schema; when given, the model must return JSON matching it.
@@ -181,8 +196,15 @@ async function callWithRetry(prompt: string, opts: GenerateOptions): Promise<str
   if (err instanceof AIError) throw err;
   const status = statusOf(err);
   if (status === 429) {
+    // Google says which limit was hit (e.g. quotaId "GenerateRequestsPerDayPerProjectPerModel-FreeTier").
+    if (isDailyLimit(err)) {
+      throw new AIError(
+        `${providerName[choice.provider]}'s daily AI allowance is used up (it resets once a day, around 8–9 am Nigerian time). Everything done so far is saved, and processing carries on by itself after the reset.`,
+        "rate_limit",
+      );
+    }
     throw new AIError(
-      `You've used your ${providerName[choice.provider]} AI allowance for now. Everything done so far is saved — try again in a few minutes, or tomorrow if it keeps happening.`,
+      `${providerName[choice.provider]}'s per-minute AI limit was reached. Everything done so far is saved, and it carries on in a minute or two.`,
       "rate_limit",
     );
   }
@@ -263,7 +285,13 @@ export async function embedTexts(texts: string[], task: EmbedTask): Promise<numb
       return null;
     } catch (err) {
       if (!isRetryable(err) || attempt >= aiConfig.maxRetries) {
-        if (statusOf(err) === 429) throw new AIError("Google's per-minute limit for search indexing was reached. It carries on in about a minute.", "rate_limit");
+        if (statusOf(err) === 429)
+          throw new AIError(
+            isDailyLimit(err)
+              ? "Google's daily AI allowance for search indexing is used up. It carries on by itself after the daily reset."
+              : "Google's per-minute limit for search indexing was reached. It carries on in about a minute.",
+            "rate_limit",
+          );
         if (isRetryable(err)) throw new AIError("The AI servers are busy. Search indexing carries on in a few minutes.", "busy");
         throw err;
       }

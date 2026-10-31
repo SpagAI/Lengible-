@@ -16,7 +16,7 @@ export async function GET() {
   ]);
   if (error) return NextResponse.json({ jobs: [], setup: isMissingTable(error) });
   // Totals over every job (the list above is capped at 300 for speed), so the panel's numbers are exact.
-  const summary = { total: 0, active: 0, waiting: 0, paused: 0, failed: 0, done: 0, percent: 0, waitingAi: 0, lastProgress: null as string | null, doneToday: 0 };
+  const summary = { total: 0, active: 0, waiting: 0, paused: 0, failed: 0, done: 0, percent: 0, waitingAi: 0, dailyUsedUp: false, lastProgress: null as string | null, doneToday: 0 };
   let sum = 0;
   for (let from = 0; from < 50000; from += 1000) {
     const { data } = await supabase
@@ -32,6 +32,7 @@ export async function GET() {
         summary.waiting++;
         // Waiting for Google's AI limit (per minute or per day), not a problem with the file.
         if (/limit|allowance|overloaded|busy/i.test(j.note ?? "")) summary.waitingAi++;
+        if (/daily AI allowance/i.test(j.note ?? "")) summary.dailyUsedUp = true;
       }
       if (j.state === "done" && j.finished_at && j.finished_at > dayAgo) summary.doneToday++;
       // When anything last moved forward.

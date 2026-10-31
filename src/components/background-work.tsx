@@ -352,6 +352,7 @@ type Summary = {
   done: number;
   percent: number;
   waitingAi?: number;
+  dailyUsedUp?: boolean;
   doneToday?: number;
   lastProgress?: string | null;
   minsSince?: number | null;
@@ -556,7 +557,9 @@ function Dock({
       )}
       {summary && (summary.waitingAi ?? 0) > 0 && (
         <p className="border-b border-border px-3 py-2 text-warn">
-          Google is limiting how much AI work your key can do right now, so files wait and retry on their own. A paid Gemini tier (billing on your API key&apos;s project) removes most of this.
+          {summary.dailyUsedUp
+            ? "Google's free daily AI allowance is used up. Files carry on by themselves after it resets (around 8–9 am Nigerian time). A paid Gemini tier (billing on your API key's project) removes this limit."
+            : "Google is limiting how much AI work your key can do right now, so files wait and retry on their own. A paid Gemini tier (billing on your API key's project) removes most of this."}
         </p>
       )}
       {!workerReady && (summary?.total ?? 0) > 0 && (

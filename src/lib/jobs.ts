@@ -2,7 +2,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, FileStatus, LibraryFile } from "@/lib/supabase/types";
-import { AIError, generateJSON } from "@/lib/ai";
+import { AIError, generateJSON, isDailyMessage, msUntilDailyReset } from "@/lib/ai";
 import { analyzeStep, type Analysis, ANALYSIS_VERSION } from "@/lib/analysis/run";
 import { download, isDrivePath, isOfficeTemp, unsupportedReason } from "@/lib/drive";
 import { parsePartsPath, partPaths } from "@/lib/library";
@@ -386,10 +386,19 @@ async function fileBytes(supabase: DB, file: LibraryFile): Promise<Buffer> {
   return pieces.length === 1 ? pieces[0] : Buffer.concat(pieces);
 }
 
+// How long to wait after an AI limit: until the daily reset for the daily allowance, a minute and a half for
+// the per-minute limit, two minutes when Google's servers are busy.
+function limitWait(message: string, busy = false): Outcome {
+  if (isDailyMessage(message)) {
+    const ms = msUntilDailyReset();
+    const h = Math.floor(ms / 3_600_000), m = Math.round((ms % 3_600_000) / 60_000);
+    return { wait: { ms, note: `Google's daily AI allowance is used up. Carries on by itself in about ${h ? `${h} h ` : ""}${m} min, when it resets.` } };
+  }
+  return { wait: { ms: busy ? 2 * 60_000 : 90_000, note: `${message.split(".")[0]}. Waiting, then carrying on.` } };
+}
+
 const aiWait = (e: unknown): Outcome | null =>
-  e instanceof AIError && (e.kind === "rate_limit" || e.kind === "busy")
-    ? { wait: { ms: e.kind === "rate_limit" ? 5 * 60_000 : 2 * 60_000, note: `${e.message.split(".")[0]}. Waiting, then carrying on.` } }
-    : null;
+  e instanceof AIError && (e.kind === "rate_limit" || e.kind === "busy") ? limitWait(e.message, e.kind === "busy") : null;
 
 async function advance(supabase: DB, job: ProcessJob, deadline: number): Promise<Outcome> {
   if (isOfficeTemp(job.name)) return { fail: unsupportedReason("", job.name)! };
@@ -525,7 +534,7 @@ async function advance(supabase: DB, job: ProcessJob, deadline: number): Promise
           continue;
         }
         if (r.status === "busy") return { wait: { ms: 60_000, note: "Being read on another device; carrying on after." } };
-        if (r.status === "rate_limited") return { wait: { ms: 5 * 60_000, note: `${(r.message ?? "AI limit reached").split(".")[0]}. Waiting, then carrying on.` } };
+        if (r.status === "rate_limited") return limitWait(r.message ?? "AI limit reached");
         if (r.status === "error") throw new Error(r.message ?? "The AI step failed.");
         return { next: "profile", patch: { note: r.status === "review" ? "Ready for you to review (timetable or topic list)." : r.status === "skipped" ? r.message ?? null : null } };
       }
@@ -574,7 +583,7 @@ async function advance(supabase: DB, job: ProcessJob, deadline: number): Promise
           if (job.drive_item_id) await markDriveItemDone(supabase, job.drive_item_id);
           return {
             wait: {
-              ms: 75_000,
+              ms: isDailyMessage(e.message) ? msUntilDailyReset() : 75_000,
               note: "Ready to use. Google's limit for search indexing was reached, so search by meaning is added later, after the other files.",
             },
             patch: { priority: INDEX_LATER },
