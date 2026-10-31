@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ChevronDown, ChevronRight, CircleStop, GripVertical, Loader2, Maximize2, Minimize2, Pause, Play, RotateCcw, Server, Trash2, Upload } from "lucide-react";
@@ -396,13 +396,33 @@ function Dock({
     setSmall(v);
     store.set("lengible:dock-small", v);
   };
+  // When files change place (one finishes and drops to the green list, the next moves up), they slide there.
+  const rowEls = useRef(new Map<string, HTMLElement>());
+  const lastTop = useRef(new Map<string, number>());
+  useLayoutEffect(() => {
+    const seen = new Map<string, number>();
+    for (const [key, el] of rowEls.current) {
+      if (!el.isConnected) continue;
+      const top = el.offsetTop;
+      seen.set(key, top);
+      const before = lastTop.current.get(key);
+      if (before !== undefined && before !== top && typeof el.animate === "function") {
+        el.animate([{ transform: `translateY(${before - top}px)` }, { transform: "none" }], { duration: 450, easing: "cubic-bezier(.2,.8,.2,1)" });
+      }
+    }
+    lastTop.current = seen;
+  });
   const active = server.filter((j) => j.state === "queued");
   const sending = uploads.filter((j) => ["waiting", "uploading"].includes(j.progress.stage));
   const paused = server.filter((j) => j.state === "paused" || j.state === "stopped");
   const failed = server.filter((j) => j.state === "failed");
   const finished = server.filter((j) => j.state === "done").length + uploads.filter((u) => !["waiting", "uploading"].includes(u.progress.stage)).length;
   if (!uploads.length && !server.length && !setupNeeded) return null;
-  const all = [...server.filter((j) => j.state !== "done"), ...server.filter((j) => j.state === "done")];
+  // Order: the files being worked on (at most 3) at the top, then those waiting their turn (smallest first),
+  // then paused/stopped and failed ones, and finished ones (green) at the bottom, the newest first.
+  const group = (j: ServerJob) => (j.state === "queued" ? (j.started || j.running ? 0 : 1) : j.state === "paused" || j.state === "stopped" ? 2 : j.state === "failed" ? 3 : 4);
+  const all = [...server].sort((a, b) => group(a) - group(b) || (group(a) === 4 ? (b.finishedAt ?? "").localeCompare(a.finishedAt ?? "") : 0));
+  const GROUP_LABEL = ["Working on now", "Waiting their turn", "Paused or stopped", "Need attention", "Finished"];
   // Exact numbers come from the server's totals; the list below may be only the first 300.
   const overall = summary?.total ? summary.percent : server.length ? server.reduce((t, j) => t + j.percent, 0) / server.length : 0;
   const nActive = summary?.active ?? active.length;
@@ -520,10 +540,25 @@ function Dock({
             <ProgressPct pct={progressPercent(j.progress) === 100 ? 10 : progressPercent(j.progress)} failed={j.progress.stage === "error"} className="mt-0.5" />
           </li>
         ))}
-        {all.map((j) => {
+        {all.flatMap((j, k) => {
           const open = openKey === j.id;
-          return (
-            <li key={j.id} className="px-3 py-2">
+          const g = group(j);
+          const heading =
+            k === 0 || group(all[k - 1]) !== g ? (
+              <li key={`group-${g}`} className="sticky top-0 z-[1] bg-surface-2/95 px-3 py-1 text-[10px] font-semibold tracking-wide text-muted uppercase backdrop-blur">
+                {GROUP_LABEL[g]} ({all.filter((x) => group(x) === g).length})
+              </li>
+            ) : null;
+          return [
+            heading,
+            <li
+              key={j.id}
+              ref={(el) => {
+                if (el) rowEls.current.set(j.id, el);
+                else rowEls.current.delete(j.id);
+              }}
+              className={cx("px-3 py-2 transition-colors duration-700", j.state === "done" && "bg-ok/10")}
+            >
               <div className="flex items-start gap-2">
                 <button type="button" onClick={() => setOpenKey(open ? null : j.id)} className="flex min-w-0 flex-1 items-start gap-2 text-left" aria-expanded={open}>
                   <StageIcon stage={fromServer(j).progress.stage} />
@@ -531,9 +566,9 @@ function Dock({
                     <span className="block font-medium break-words" title={j.name}>
                       {j.name}
                     </span>
-                    <span className={cx("block", j.state === "failed" ? "line-clamp-3 text-danger" : "truncate text-muted")}>
+                    <span className={cx("block", j.state === "failed" ? "line-clamp-3 text-danger" : j.state === "done" ? "font-medium text-ok" : "truncate text-muted")}>
                       {j.state === "done"
-                        ? "Processed"
+                        ? "Processed ✓"
                         : j.state === "failed"
                           ? `Failed at “${STEP_TEXT[j.step] ?? j.step}” · ${j.error ?? ""}`
                           : j.state === "paused"
@@ -578,8 +613,8 @@ function Dock({
                   )}
                 </div>
               )}
-            </li>
-          );
+            </li>,
+          ];
         })}
       </ul>
       {finished > 0 && (
