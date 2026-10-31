@@ -570,7 +570,7 @@ function Dock({
                       {j.state === "done"
                         ? "Processed ✓"
                         : j.state === "failed"
-                          ? `Failed at “${STEP_TEXT[j.step] ?? j.step}” · ${j.error ?? ""}`
+                          ? `Couldn't be processed (stopped at “${STEP_TEXT[j.step] ?? j.step}”): ${j.error ?? "unknown problem"}. Other files carry on. Fix the cause if you can, then tap Retry.`
                           : j.state === "paused"
                             ? `Paused at “${STEP_TEXT[j.step] ?? j.step}”`
                             : j.state === "stopped"

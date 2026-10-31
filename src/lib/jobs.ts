@@ -185,7 +185,9 @@ async function findOpenJob(supabase: DB, fileId: string | null, driveItemId: str
 // ——— Working through the queue ———
 
 const LOCK_MS = 5 * 60_000;
-const MAX_ATTEMPTS = 6;
+// A file that hits a problem gets 2 more tries (30 s, then 60 s later). If it still fails, it's left as Failed
+// with the reason (it may need you, e.g. a damaged or private file) and its place goes to the next file.
+const MAX_ATTEMPTS = 3;
 const iso = (ms: number) => new Date(ms).toISOString();
 
 // Works on a user's queue until the deadline: up to `parallel` files at once.
@@ -295,6 +297,7 @@ async function runJob(supabase: DB, start: ProcessJob, deadline: number) {
         patch.note = out.wait.note;
       }
       if (out.fail) {
+        await markFileFailed(supabase, job, out.fail);
         patch.state = "failed";
         patch.error = out.fail;
         patch.finished_at = new Date().toISOString();
@@ -315,25 +318,45 @@ async function runJob(supabase: DB, start: ProcessJob, deadline: number) {
   } catch (e) {
     // Something unexpected (network, server): try again later, from this same step.
     const attempts = job.attempts + 1;
-    const message = e instanceof Error ? e.message : "Something went wrong.";
+    const message = plainReason(e instanceof Error ? e.message : "Something went wrong.");
     await supabase
       .from("process_jobs")
       .update(
         attempts >= MAX_ATTEMPTS
-          ? { state: "failed", error: message, attempts, locked_until: null, finished_at: new Date().toISOString(), updated_at: new Date().toISOString() }
+          ? { state: "failed", error: `${message} (tried ${attempts} times)`, attempts, locked_until: null, finished_at: new Date().toISOString(), updated_at: new Date().toISOString() }
           : {
               attempts,
-              note: `Problem (${message.slice(0, 120)}). Trying again shortly from the same step.`,
-              not_before: iso(Date.now() + 60_000 * 2 ** (attempts - 1)),
+              note: `Problem (${message.slice(0, 120)}). Retry ${attempts} of ${MAX_ATTEMPTS - 1} in ${30 * attempts} seconds, from the same step.`,
+              not_before: iso(Date.now() + 30_000 * attempts),
               locked_until: null,
               updated_at: new Date().toISOString(),
             },
       )
       .eq("id", job.id);
+    if (attempts >= MAX_ATTEMPTS) await markFileFailed(supabase, job, `${message} (tried ${attempts} times)`);
     return;
   }
   // Out of time, or paused/stopped: let it go, so it can be picked up again straight away (e.g. after Resume).
   await supabase.from("process_jobs").update({ locked_until: null }).eq("id", job.id);
+}
+
+// Technical errors in plain words (what's wrong, and what you can do).
+function plainReason(m: string) {
+  if (/central directory|is this a zip|corrupted zip|end of data/i.test(m))
+    return "The file is damaged, or isn't really the type its name says (e.g. an old .ppt renamed .pptx). Open it in Drive or PowerPoint and save it again as .pptx or PDF";
+  if (/password|encrypt/i.test(m)) return "The file is password-protected. Save a copy without the password, then add that";
+  if (/invalid pdf|invalidpdf|bad xref|xref|no pdf header|unexpected end/i.test(m)) return "The PDF is damaged. Download it from Drive, open it, and save or print it again as a new PDF";
+  if (/not a valid|unsupported|can't be read/i.test(m)) return "This kind of file can't be read";
+  if (/fetch failed|ECONN|ETIMEDOUT|socket|network/i.test(m)) return `A connection problem kept happening (${m.slice(0, 80)})`;
+  return m;
+}
+
+// A file that couldn't be processed shows why: in the Library (Failed) and on the Drive page (Problem).
+async function markFileFailed(supabase: DB, job: ProcessJob, reason: string) {
+  const short = reason.slice(0, 300);
+  // Only when there's no usable text yet: a file whose text was saved stays readable and searchable.
+  if (job.file_id) await supabase.from("files").update({ status: "failed", error: short }).eq("id", job.file_id).in("status", ["uploaded", "no_text"]);
+  if (job.drive_item_id) await supabase.from("drive_items").update({ status: "error", error: short, claimed_at: null }).eq("id", job.drive_item_id).neq("status", "imported");
 }
 
 async function loadFile(supabase: DB, id: string | null) {
