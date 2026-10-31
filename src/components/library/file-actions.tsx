@@ -8,6 +8,7 @@ import { finishExtraction, startReplace } from "@/app/(app)/library/actions";
 import { findPicturePages, PICTURE_PAGE_CHARS } from "@/lib/extract/client";
 import { analyze, MAX_PICTURE_PAGES, readPicturePages, runPipeline, type Progress } from "./pipeline";
 import { useBackgroundWork } from "@/components/background-work";
+import { JoinedDownload, joinParts } from "@/components/library/joined-file";
 import { StageIcon } from "./upload-panel";
 import { Button } from "@/components/ui";
 import { postJSON } from "@/lib/fetch-json";
@@ -17,12 +18,15 @@ export function FileActions({
   viewUrl,
   downloadUrl,
   linked,
+  partUrls,
 }: {
   file: { id: string; name: string; mime: string | null; courseId: string | null; status: string; ext: string; scanSkipped: boolean; scanPausedAt: number; pages: number };
   viewUrl: string;
   downloadUrl: string;
   // Linked from Google Drive (not copied): opened and downloaded from Drive, read again from Drive.
   linked?: { open: string; download: string };
+  // A big upload stored in pieces: downloaded by joining them back.
+  partUrls?: string[];
 }) {
   const supabase = useSupabase();
   const router = useRouter();
@@ -37,7 +41,7 @@ export function FileActions({
   async function shareFile() {
     setSharing(true);
     try {
-      const blob = await (await fetch(viewUrl)).blob();
+      const blob = partUrls?.length ? await joinParts(partUrls, file.mime ?? "application/octet-stream") : await (await fetch(viewUrl)).blob();
       const f = new File([blob], `${file.name}${file.ext}`, { type: file.mime ?? blob.type });
       if (navigator.canShare?.({ files: [f] })) await navigator.share({ files: [f], title: file.name });
       else window.open(downloadUrl, "_blank");
@@ -137,9 +141,13 @@ export function FileActions({
         )}
         {!linked && (
           <>
-            <a href={downloadUrl} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-border bg-surface px-4 text-sm font-medium hover:bg-surface-2">
-              <Download size={16} /> Download
-            </a>
+            {partUrls?.length ? (
+              <JoinedDownload urls={partUrls} name={`${file.name}${file.ext}`} type={file.mime ?? "application/octet-stream"} />
+            ) : (
+              <a href={downloadUrl} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-border bg-surface px-4 text-sm font-medium hover:bg-surface-2">
+                <Download size={16} /> Download
+              </a>
+            )}
             <Button type="button" variant="secondary" disabled={!!busy} onClick={() => input.current?.click()}>
               <Upload size={16} /> Replace with new version
             </Button>
@@ -170,7 +178,7 @@ export function FileActions({
             <RefreshCw size={16} /> Re-analyse
           </Button>
         )}
-        {isPdf && !linked && file.status !== "no_text" && (
+        {isPdf && !linked && !partUrls?.length && file.status !== "no_text" && (
           <Button type="button" variant="ghost" disabled={!!busy} onClick={readPictures} title="Slides that are mostly a diagram, micrograph or table">
             <ImageIcon size={16} /> Read picture pages
           </Button>

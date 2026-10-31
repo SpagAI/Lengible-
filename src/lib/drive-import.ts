@@ -1,8 +1,8 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, DriveItem } from "@/lib/supabase/types";
-import { DriveError, download, drivePath, isDrivePath, isLinkOnly, libraryMime, libraryName } from "@/lib/drive";
-import { storagePath } from "@/lib/library";
+import { DriveError, download, drivePath, isLinkOnly, libraryMime, libraryName } from "@/lib/drive";
+import { storageObjects, storagePath } from "@/lib/library";
 
 type DB = SupabaseClient<Database>;
 
@@ -85,7 +85,8 @@ export async function importDriveItem(supabase: DB, userId: string, id: string) 
         supabase.from("topic_files").delete().eq("file_id", old.id),
       ]);
       await supabase.from("files").update({ ...fields, version: old.version + 1, updated_at: new Date().toISOString() }).eq("id", old.id);
-      if (old.storage_path !== path && !isDrivePath(old.storage_path)) await supabase.storage.from("library").remove([old.storage_path]);
+      const before = storageObjects(old.storage_path).filter((o) => o !== path);
+      if (before.length) await supabase.storage.from("library").remove(before);
     } else {
       const { error } = await supabase.from("files").insert({ id: fileId, ...fields });
       if (error) throw new DriveError(`Couldn't save the file record: ${error.message}`, "other");

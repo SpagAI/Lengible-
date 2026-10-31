@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/supabase/server";
 import type { DocType } from "@/lib/supabase/types";
-import { docTypes, storagePath, courseParam } from "@/lib/library";
+import { docTypes, storagePath, courseParam, MAX_UPLOAD, PART_SIZE, partsPath, partPaths, storageObjects } from "@/lib/library";
 
 const str = (fd: FormData, k: string) => String(fd.get(k) ?? "").trim();
 const isDocType = (v: string): v is DocType => docTypes.some((d) => d.value === v);
@@ -40,7 +40,11 @@ export type NewFile = { courseId: string | null; folderId: string | null; topicI
 export async function createFileRecord(f: NewFile) {
   const { supabase, user } = await requireUser();
   const id = crypto.randomUUID();
-  const path = storagePath(user.id, id, f.name, 1);
+  if (f.size > MAX_UPLOAD) return { error: `Files up to ${MAX_UPLOAD / 1024 / 1024} MB can be uploaded (this one is ${Math.round(f.size / 1e6)} MB). Put it in your Google Drive folder instead: Drive files have no size limit.` };
+  const base = storagePath(user.id, id, f.name, 1);
+  // Over 50 MB: stored in pieces and joined back when read (see lib/library.ts).
+  const count = f.size > 50 * 1024 * 1024 ? Math.ceil(f.size / PART_SIZE) : 0;
+  const path = count ? partsPath(base, count) : base;
   const { error } = await supabase.from("files").insert({
     id,
     course_id: f.courseId,
@@ -53,7 +57,7 @@ export async function createFileRecord(f: NewFile) {
     size_bytes: f.size,
   });
   if (error) return { error: "Couldn't save the file record. Has the Phase 2 database update been run?" };
-  return { id, path };
+  return { id, path, parts: count ? partPaths(base, count) : null };
 }
 
 // Step 3: the browser has saved the text (or found none).
@@ -81,7 +85,7 @@ export async function startReplace(id: string, name: string, mime: string, size:
     .from("files")
     .update({ storage_path: path, version, mime_type: mime || null, size_bytes: size, status: "uploaded", analysis: null, error: null, updated_at: new Date().toISOString() })
     .eq("id", id);
-  await supabase.storage.from("library").remove([file.storage_path]);
+  if (storageObjects(file.storage_path).length) await supabase.storage.from("library").remove(storageObjects(file.storage_path));
   return { id, path };
 }
 
@@ -111,7 +115,8 @@ export async function deleteFile(fd: FormData) {
   const id = str(fd, "id");
   const { data: file } = await supabase.from("files").select("storage_path, course_id, folder_id").eq("id", id).maybeSingle();
   if (file) {
-    await supabase.storage.from("library").remove([file.storage_path]);
+    const objects = storageObjects(file.storage_path);
+    if (objects.length) await supabase.storage.from("library").remove(objects);
     await supabase.from("files").delete().eq("id", id);
   }
   revalidatePath("/library", "layout");

@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { BookOpenText, ChevronRight, ExternalLink, Layers, Trash2 } from "lucide-react";
 import { requireUser } from "@/lib/supabase/server";
 import { getCourses } from "@/lib/courses";
-import { courseParam, docTypeLabel, docTypes, formatBytes, importableTypes } from "@/lib/library";
+import { courseParam, docTypeLabel, docTypes, formatBytes, importableTypes, parsePartsPath, partPaths } from "@/lib/library";
 import { updateFile, deleteFile } from "@/app/(app)/library/actions";
 import { PageHeader, Card, Button, Field, inputClass, cx } from "@/components/ui";
 import { PdfViewer } from "@/components/library/pdf-viewer";
@@ -14,6 +14,7 @@ import { ConfirmButton } from "@/components/confirm-button";
 import { MaterialCardsButton } from "@/components/flashcards/deck-buttons";
 import { ProcessDetails } from "@/components/process-details";
 import { driveOpenUrl, drivePreviewUrl, isDrivePath } from "@/lib/drive";
+import { JoinedPdfViewer } from "@/components/library/joined-file";
 import { ProcessFileButton } from "@/components/library/process-bar";
 import { MaterialQuiz } from "@/components/quiz/material-quiz";
 import { ProfileCard } from "@/components/library/profile-card";
@@ -75,6 +76,10 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
   const byKind = new Map<string, typeof concepts>();
   for (const l of concepts) byKind.set(l.concepts.kind, [...(byKind.get(l.concepts.kind) ?? []), l]);
   const viewUrl = view.data?.signedUrl ?? "";
+  // A big upload stored in pieces: links to each piece, joined back in the browser.
+  const pieces = parsePartsPath(file.storage_path);
+  const { data: pieceLinks } = pieces ? await supabase.storage.from("library").createSignedUrls(partPaths(pieces.base, pieces.count), 3600) : { data: null };
+  const partUrls = pieceLinks?.map((l) => l.signedUrl).filter(Boolean) as string[] | undefined;
   const isPdf = ext.toLowerCase() === ".pdf";
   const isImage = file.mime_type?.startsWith("image/");
   const needsReview = !!(file.analysis as { pendingReview?: boolean } | null)?.pendingReview;
@@ -115,6 +120,7 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
         }}
         viewUrl={viewUrl}
         downloadUrl={download.data?.signedUrl ?? viewUrl}
+        partUrls={partUrls}
         linked={linked ? { open: linked.open, download: linked.download } : undefined}
       />
 
@@ -245,6 +251,8 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
         {tab === "view" &&
           (linked ? (
             <iframe src={linked.preview} title={file.name} className="h-[80dvh] w-full border-0 bg-surface-2" allow="autoplay" />
+          ) : isPdf && partUrls?.length ? (
+            <JoinedPdfViewer urls={partUrls} startPage={startPage} />
           ) : isPdf && viewUrl ? (
             <PdfViewer url={viewUrl} startPage={startPage} />
           ) : isImage && viewUrl ? (

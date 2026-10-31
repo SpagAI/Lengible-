@@ -10,6 +10,7 @@ import { progressPercent, type Progress } from "@/components/library/pipeline";
 import { ProgressPct } from "@/components/progress-pct";
 import { StageIcon } from "@/components/library/upload-panel";
 import { cx } from "@/components/ui";
+import { PART_SIZE } from "@/lib/library";
 
 // Processing happens on the server, in a queue (see src/lib/jobs.ts): it keeps going with Lengible closed,
 // and pausing, a lost connection or a retry continues from the last finished step. This provider sends work
@@ -173,7 +174,15 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
           updateUpload(job.key, { progress: { stage: "error", message: record.error } });
           continue;
         }
-        const { error } = await supabase.storage.from("library").upload(record.path, file, { contentType: file.type || undefined, upsert: true });
+        // A file over 50 MB goes up in 45 MB pieces (joined back exactly when it's read).
+        let error: { message: string } | null = null;
+        if (record.parts) {
+          for (let k = 0; k < record.parts.length && !error; k++) {
+            updateUpload(job.key, { progress: { stage: "uploading", step: "upload", message: `Uploading part ${k + 1} of ${record.parts.length}`, done: k, total: record.parts.length } });
+            const piece = file.slice(k * PART_SIZE, (k + 1) * PART_SIZE);
+            ({ error } = await supabase.storage.from("library").upload(record.parts[k], piece, { contentType: "application/octet-stream", upsert: true }));
+          }
+        } else ({ error } = await supabase.storage.from("library").upload(record.path, file, { contentType: file.type || undefined, upsert: true }));
         if (error) {
           updateUpload(job.key, { id: record.id, progress: { stage: "error", message: error.message.includes("exceeded") ? "File is bigger than the 50 MB limit." : `Upload failed: ${error.message}` } });
           continue;
@@ -424,7 +433,7 @@ function Dock({
             <span className="min-w-0 flex-1">
               <span className="block truncate font-medium">{j.name}</span>
               <span className={cx("block", j.progress.stage === "error" ? "text-danger" : "text-muted")}>
-                {j.progress.stage === "uploading" ? "Uploading from this device…" : j.progress.stage === "waiting" ? "Waiting to upload" : j.progress.message}
+                {j.progress.stage === "uploading" ? (j.progress.message ?? "Uploading from this device…") : j.progress.stage === "waiting" ? "Waiting to upload" : j.progress.message}
               </span>
             </span>
             <ProgressPct pct={progressPercent(j.progress) === 100 ? 10 : progressPercent(j.progress)} failed={j.progress.stage === "error"} className="mt-0.5" />

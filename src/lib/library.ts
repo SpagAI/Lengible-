@@ -61,3 +61,20 @@ export function guessType(name: string) {
   if (/\.(jpe?g|png|webp|heic)$/.test(n)) return "picture_test";
   return "";
 }
+
+// ——— Big files from your device ———
+// Supabase's free plan stores at most 50 MB per file, so a bigger upload is stored in pieces (45 MB each) and
+// joined back, byte for byte, whenever it's read, opened or downloaded. Nothing is compressed or left out.
+export const PART_SIZE = 45 * 1024 * 1024;
+export const MAX_UPLOAD = 300 * 1024 * 1024;
+export const partsPath = (path: string, count: number) => `parts:${count}:${path}`;
+export function parsePartsPath(storagePath: string) {
+  const m = storagePath.match(/^parts:(\d+):(.+)$/);
+  return m ? { count: Number(m[1]), base: m[2] } : null;
+}
+export const partPaths = (base: string, count: number) => Array.from({ length: count }, (_, i) => `${base}.part${i}`);
+// Every storage object behind a file (one, or its pieces).
+export function storageObjects(storagePath: string) {
+  const parts = parsePartsPath(storagePath);
+  return parts ? partPaths(parts.base, parts.count) : storagePath.startsWith("drive:") ? [] : [storagePath];
+}

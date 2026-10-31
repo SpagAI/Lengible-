@@ -41,21 +41,40 @@ const SUPPORTED = [
 ];
 export const MAX_BYTES = 50 * 1024 * 1024;
 
+// Google Sheets are read as their table (CSV).
+const SHEET = "application/vnd.google-apps.spreadsheet";
+// Everything Lengible reads: PDF, PowerPoint and Word (new and old), Excel, OpenDocument, rich text, web pages, e-books, text, pictures.
+const READABLE = /\.(pdf|pptx|ppt|docx|doc|xlsx|odt|odp|ods|rtf|epub|html?|txt|md|csv|tsv|jpe?g|png|webp|heic)$/i;
+const READABLE_MIME = [
+  "application/msword",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.oasis.opendocument.text",
+  "application/vnd.oasis.opendocument.presentation",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "application/rtf",
+  "text/rtf",
+  "application/epub+zip",
+  "text/html",
+  "text/csv",
+];
+
 export function isSupported(mime: string, name: string) {
-  return EXPORT_AS_PDF.has(mime) || SUPPORTED.includes(mime) || mime.startsWith("image/") || /\.(pdf|pptx|docx|txt|md|jpe?g|png|webp)$/i.test(name);
+  return EXPORT_AS_PDF.has(mime) || mime === SHEET || SUPPORTED.includes(mime) || READABLE_MIME.includes(mime) || mime.startsWith("image/") || READABLE.test(name);
 }
 // Why a file can't be read, in plain words (or null when it can).
 export function unsupportedReason(mime: string, name: string) {
   if (isSupported(mime, name)) return null;
-  if (/\.ppt$/i.test(name) || mime === "application/vnd.ms-powerpoint") return "Old .ppt format: save it as .pptx or PDF to include it.";
-  if (/\.doc$/i.test(name) || mime === "application/msword") return "Old .doc format: save it as .docx or PDF to include it.";
-  if (mime === "application/vnd.google-apps.spreadsheet" || /\.xlsx?$/i.test(name)) return "Spreadsheets aren't read yet.";
+  if (/\.xls$/i.test(name) || mime === "application/vnd.ms-excel") return "Old .xls spreadsheet: save it as .xlsx (or a Google Sheet) to include it.";
   if (mime.startsWith("video/") || mime.startsWith("audio/")) return "Videos and audio aren't read.";
+  if (mime === "application/vnd.google-apps.form" || mime === "application/vnd.google-apps.site") return "Google Forms and Sites can't be read.";
+  if (/\.(zip|rar|7z)$/i.test(name)) return "Zipped files can't be read: unzip them into the folder instead.";
   return "This kind of file can't be read.";
 }
-// The name the file gets in your Library (Google Docs/Slides become PDFs).
-export const libraryName = (name: string, mime: string) => (EXPORT_AS_PDF.has(mime) && !/\.pdf$/i.test(name) ? `${name}.pdf` : name);
-export const libraryMime = (mime: string) => (EXPORT_AS_PDF.has(mime) ? "application/pdf" : mime);
+// The name the file gets in your Library (Google Docs/Slides become PDFs, Google Sheets a table).
+export const libraryName = (name: string, mime: string) =>
+  EXPORT_AS_PDF.has(mime) && !/\.pdf$/i.test(name) ? `${name}.pdf` : mime === SHEET && !/\.csv$/i.test(name) ? `${name}.csv` : name;
+export const libraryMime = (mime: string) => (EXPORT_AS_PDF.has(mime) ? "application/pdf" : mime === SHEET ? "text/csv" : mime);
 
 // Pulls the id (and resource key, for older shared links) out of any Drive link.
 export function parseDriveLink(link: string) {
@@ -254,14 +273,16 @@ export async function listFolder(id: string, resourceKey: string | null) {
   return { files: out, folders, paths: paths.sort(), truncated, blocked: blocked.sort() };
 }
 
-// PowerPoint and Word files (and anything over the 50 MB storage limit) aren't copied into your storage:
-// Lengible keeps a link to the Drive file, reads its text on the server, and shows it with Google's viewer.
-// This saves your Supabase storage (1 GB on the free plan) and has no size limit.
-export const isLinkOnly = (item: Pick<DriveItem, "mime" | "name" | "size_bytes">) =>
-  (!EXPORT_AS_PDF.has(item.mime) && /\.(pptx|docx)$/i.test(item.name)) ||
-  item.mime === "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
-  item.mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-  (!!item.size_bytes && item.size_bytes > MAX_BYTES && !EXPORT_AS_PDF.has(item.mime));
+// Only PDFs and pictures (up to 50 MB) are copied into your storage, because Lengible shows those itself.
+// Everything else (PowerPoint, Word, Excel, Google Sheets, …) and any file over 50 MB stays in Drive: Lengible keeps
+// a link, reads the whole file on the server (every page, full size, nothing compressed), and shows it with
+// Google's viewer. This saves your Supabase storage (1 GB on the free plan) and has no size limit.
+export const isLinkOnly = (item: Pick<DriveItem, "mime" | "name" | "size_bytes">) => {
+  if (EXPORT_AS_PDF.has(item.mime)) return false;
+  if (item.size_bytes && item.size_bytes > MAX_BYTES) return true;
+  const pdfOrPicture = item.mime === "application/pdf" || item.mime.startsWith("image/") || /\.(pdf|jpe?g|png|webp|heic)$/i.test(item.name);
+  return !pdfOrPicture;
+};
 // The storage path of a linked file: no copy, just where it lives in Drive (and its name, for its type).
 export const drivePath = (driveId: string, name: string) => `drive:${driveId}/${name}`;
 export const isDrivePath = (path: string) => path.startsWith("drive:");
@@ -277,7 +298,9 @@ export async function download(item: Pick<DriveItem, "drive_id" | "resource_key"
   if (item.size_bytes && item.size_bytes > limit) throw new DriveError(`Over the 50 MB limit (${Math.round(item.size_bytes / 1e6)} MB). Compress or split it, then add it by hand.`, "too_big");
   const res = EXPORT_AS_PDF.has(item.mime)
     ? await call(`/files/${item.drive_id}/export`, { mimeType: "application/pdf" }, keys)
-    : await call(`/files/${item.drive_id}`, { alt: "media", acknowledgeAbuse: "true" }, keys);
+    : item.mime === SHEET
+      ? await call(`/files/${item.drive_id}/export`, { mimeType: "text/csv" }, keys)
+      : await call(`/files/${item.drive_id}`, { alt: "media", acknowledgeAbuse: "true" }, keys);
   const buf = Buffer.from(await res.arrayBuffer());
   if (buf.length > limit) throw new DriveError(`Over the 50 MB limit (${Math.round(buf.length / 1e6)} MB). Compress or split it, then add it by hand.`, "too_big");
   return buf;
@@ -374,6 +397,8 @@ export async function syncItems(supabase: DB, source: DriveSource) {
     if (old.status === "removed") update.status = old.file_id ? "imported" : "new";
     // Big files used to be refused; they're linked now.
     if (old.error && /50 MB limit/.test(old.error) && old.status !== "imported") Object.assign(update, { error: null, ...(old.status === "error" ? { status: "new" } : {}) });
+    // Kinds of file that couldn't be read before (old .ppt/.doc, spreadsheets…) can be now.
+    if (old.status === "skipped" && !unsupportedReason(f.mime, f.name)) Object.assign(update, { status: "new", error: null });
     if (Object.keys(update).length) updates.push({ id: old.id, update });
   }
   // Saved 20 at a time (a big drive can have thousands of files moved or renamed at once).

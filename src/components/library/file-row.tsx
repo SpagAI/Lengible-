@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { FileText, FileImage, Presentation, FileType2, File as FileIcon } from "lucide-react";
+import { FileText, FileImage, Presentation, FileType2, Sheet, File as FileIcon } from "lucide-react";
 import type { LibraryFile } from "@/lib/supabase/types";
 import { docTypeLabel, formatBytes } from "@/lib/library";
 import { formatDate } from "@/lib/dates";
@@ -10,8 +10,9 @@ export function FileTypeIcon({ file, size = 20 }: { file: Pick<LibraryFile, "mim
   const p = file.storage_path.toLowerCase();
   if (file.mime_type?.startsWith("image/")) return <FileImage size={size} />;
   if (p.endsWith(".pdf")) return <FileText size={size} />;
-  if (p.endsWith(".pptx")) return <Presentation size={size} />;
-  if (p.endsWith(".docx")) return <FileType2 size={size} />;
+  if (/\.(pptx?|odp)$/.test(p)) return <Presentation size={size} />;
+  if (/\.(docx?|odt|rtf|epub)$/.test(p)) return <FileType2 size={size} />;
+  if (/\.(xlsx|ods|csv|tsv)$/.test(p)) return <Sheet size={size} />;
   return <FileIcon size={size} />;
 }
 

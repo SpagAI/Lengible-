@@ -5,6 +5,7 @@ import type { Database, FileStatus, LibraryFile } from "@/lib/supabase/types";
 import { AIError, generateJSON } from "@/lib/ai";
 import { analyzeStep, type Analysis, ANALYSIS_VERSION } from "@/lib/analysis/run";
 import { download, isDrivePath } from "@/lib/drive";
+import { parsePartsPath, partPaths } from "@/lib/library";
 import { importDriveItem, markDriveItemDone } from "@/lib/drive-import";
 import { extractAny } from "@/lib/extract/server";
 import { profileStep, questionsStep, needsQuestions } from "@/lib/profile";
@@ -277,9 +278,16 @@ async function fileBytes(supabase: DB, file: LibraryFile): Promise<Buffer> {
     const driveId = item?.drive_id ?? file.storage_path.slice(6).split("/")[0];
     return download({ drive_id: driveId, resource_key: item?.resource_key ?? null, mime: item?.mime ?? file.mime_type ?? "", size_bytes: item?.size_bytes ?? null }, 300 * 1024 * 1024);
   }
-  const { data, error } = await supabase.storage.from("library").download(file.storage_path);
-  if (error || !data) throw new Error(`Couldn't open the stored file (${error?.message ?? "missing"}).`);
-  return Buffer.from(await data.arrayBuffer());
+  // A big upload stored in pieces: joined back exactly.
+  const parts = parsePartsPath(file.storage_path);
+  const objects = parts ? partPaths(parts.base, parts.count) : [file.storage_path];
+  const pieces: Buffer[] = [];
+  for (const o of objects) {
+    const { data, error } = await supabase.storage.from("library").download(o);
+    if (error || !data) throw new Error(`Couldn't open the stored file (${error?.message ?? "missing"}).`);
+    pieces.push(Buffer.from(await data.arrayBuffer()));
+  }
+  return pieces.length === 1 ? pieces[0] : Buffer.concat(pieces);
 }
 
 const aiWait = (e: unknown): Outcome | null =>
@@ -311,7 +319,8 @@ async function advance(supabase: DB, job: ProcessJob, deadline: number): Promise
       if (!file) return { fail: "The file was deleted." };
       const buf = await fileBytes(supabase, file);
       const hash = createHash("sha256").update(buf).digest("hex");
-      const name = /\.[a-z0-9]{2,5}$/i.test(file.storage_path) ? file.storage_path.split("/").pop()! : file.name;
+      const stored = parsePartsPath(file.storage_path)?.base ?? file.storage_path;
+      const name = /\.[a-z0-9]{2,5}$/i.test(stored) ? stored.split("/").pop()! : file.name;
       const x = await extractAny(buf, name, file.mime_type ?? "");
       // From the start of this step: replace any earlier text.
       await Promise.all([

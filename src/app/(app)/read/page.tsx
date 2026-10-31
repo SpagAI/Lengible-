@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/supabase/server";
 import { drivePreviewUrl, isDrivePath } from "@/lib/drive";
 import { Reader } from "@/components/library/reader";
+import { parsePartsPath, partPaths } from "@/lib/library";
 import type { LibraryFile } from "@/lib/supabase/types";
 
 export const metadata: Metadata = { title: "Read" };
@@ -25,9 +26,14 @@ export default async function ReadPage({ searchParams }: PageProps<"/read">) {
     supabase.from("chunks").select("page, content").eq("file_id", file.id).order("page").limit(3000),
     supabase.from("drive_items").select("drive_id, resource_key").eq("file_id", file.id).limit(1).maybeSingle(),
   ]);
-  let visual: { kind: "pdf" | "image" | "drive"; url: string } | null = null;
+  let visual: { kind: "pdf" | "image" | "drive"; url: string; parts?: string[] } | null = null;
+  const pieces = parsePartsPath(file.storage_path);
   if (isDrivePath(file.storage_path)) {
     visual = { kind: "drive", url: drivePreviewUrl(item?.drive_id ?? file.storage_path.slice(6).split("/")[0], item?.resource_key) };
+  } else if (pieces) {
+    // A big upload stored in pieces: joined back in the browser.
+    const { data: links } = await supabase.storage.from("library").createSignedUrls(partPaths(pieces.base, pieces.count), 3600);
+    if (pieces.base.toLowerCase().endsWith(".pdf") && links?.length) visual = { kind: "pdf", url: "", parts: links.map((l) => l.signedUrl).filter((u): u is string => !!u) };
   } else {
     const { data: signed } = await supabase.storage.from("library").createSignedUrl(file.storage_path, 3600);
     const lower = file.storage_path.toLowerCase();
@@ -42,7 +48,7 @@ export default async function ReadPage({ searchParams }: PageProps<"/read">) {
       ids={files.map((f) => f.id)}
       names={files.map((f) => f.name)}
       index={files.indexOf(file)}
-      file={{ id: file.id, name: file.name, status: file.status, pageCount: file.page_count ?? 0, slides: /\.pptx$/i.test(file.storage_path) }}
+      file={{ id: file.id, name: file.name, status: file.status, pageCount: file.page_count ?? 0, slides: /\.(pptx?|odp)$/i.test(file.storage_path) }}
       pages={(pages ?? []).map((p) => ({ page: p.page, text: p.content }))}
       visual={visual}
       startPage={Number(sp.page) || 0}

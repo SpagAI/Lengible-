@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { loadOwnFile } from "@/lib/api";
 import { DriveError, download, isDrivePath } from "@/lib/drive";
-import { extractOffice, officeKind } from "@/lib/extract/server";
+import { extractAny } from "@/lib/extract/server";
 
 // Downloading a big deck from Google and unzipping it can take a while.
 export const maxDuration = 300;
@@ -18,12 +18,6 @@ export async function POST(_req: NextRequest, ctx: RouteContext<"/api/files/[id]
   if (!isDrivePath(file.storage_path)) return NextResponse.json({ status: "error", message: "This file isn't linked from Google Drive." });
   const { data: item } = await supabase.from("drive_items").select("drive_id, resource_key, mime, size_bytes, name").eq("file_id", id).limit(1).maybeSingle();
   if (!item) return NextResponse.json({ status: "error", message: "The Drive link for this file was removed. Add the link again to read it." });
-  const kind = officeKind(item.name, item.mime);
-  if (!kind) {
-    const message = "PDFs and pictures over 50 MB can't be read yet. Open it in Drive and split or compress it, or download it and upload a smaller copy.";
-    await supabase.from("files").update({ status: "failed", error: message }).eq("id", id);
-    return NextResponse.json({ status: "error", message });
-  }
 
   // From the start: clear any earlier reading.
   await Promise.all([
@@ -34,7 +28,8 @@ export async function POST(_req: NextRequest, ctx: RouteContext<"/api/files/[id]
   await supabase.from("files").update({ status: "uploaded", analysis: null, error: null }).eq("id", id);
   try {
     const buf = await download(item, READ_LIMIT);
-    const { pages, pageCount } = await extractOffice(buf, kind);
+    const { pages, pageCount, kind } = await extractAny(buf, item.name, item.mime);
+    if (kind === "other") throw new Error("This kind of file can't be read.");
     for (let i = 0; i < pages.length; i += 100) {
       const rows = pages.slice(i, i + 100).map((p) => ({ file_id: id, course_id: file.course_id, page: p.page, content: p.text.slice(0, 20000) }));
       const { error } = await supabase.from("chunks").insert(rows);

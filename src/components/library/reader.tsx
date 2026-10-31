@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ChevronLeft, ChevronRight, FileText, Minus, MonitorPlay, Plus, Sparkles, X } from "lucide-react";
 import { PdfViewer } from "@/components/library/pdf-viewer";
+import { JoinedPdfViewer } from "@/components/library/joined-file";
 import { BackButton } from "@/components/back-button";
 import { cx } from "@/components/ui";
 
@@ -50,7 +51,7 @@ function ReaderInner({
   index: number;
   file: { id: string; name: string; status: string; pageCount: number; slides: boolean };
   pages: Page[];
-  visual: { kind: "pdf" | "image" | "drive"; url: string } | null;
+  visual: { kind: "pdf" | "image" | "drive"; url: string; parts?: string[] } | null;
   startPage: number;
 }) {
   const router = useRouter();
@@ -141,7 +142,9 @@ function ReaderInner({
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {mode === "slides" && visual ? (
-          visual.kind === "pdf" ? (
+          visual.kind === "pdf" && visual.parts?.length ? (
+            <JoinedPdfViewer urls={visual.parts} startPage={current?.page ?? 1} />
+          ) : visual.kind === "pdf" ? (
             <PdfViewer url={visual.url} startPage={current?.page ?? 1} />
           ) : visual.kind === "image" ? (
             // eslint-disable-next-line @next/next/no-img-element

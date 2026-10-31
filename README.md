@@ -106,6 +106,16 @@ public/sw.js          service worker (install + offline)
 6. Course intelligence
 7. Pathology picture tests and on-request diagrams
 
+## File types and big files
+
+Lengible reads PDF, PowerPoint (.pptx and old .ppt), Word (.docx and old .doc), Excel (.xlsx), Google Docs/Slides/Sheets,
+OpenDocument (.odt, .odp, .ods), rich text (.rtf), e-books (.epub), web pages (.html), text/CSV and photos (old .xls: save as .xlsx).
+Nothing is ever compressed: big files keep every page and image at full quality.
+- **From Drive:** only PDFs and pictures up to 50 MB are copied into your storage (Lengible shows those itself); everything else, and
+  anything over 50 MB, stays in Drive and is read whole on the server (up to 300 MB), and shown with Google's viewer.
+- **From your device:** up to 300 MB. Files over 50 MB (the free Supabase per-file limit) are stored in 45 MB pieces and joined back
+  byte for byte whenever they're read, opened or downloaded. They do count towards Supabase's 1 GB of free storage.
+
 ## Processing on the server
 
 Every file you upload or bring in from Drive goes into a queue that is worked on the server (every minute by Supabase's

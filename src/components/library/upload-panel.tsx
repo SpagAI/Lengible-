@@ -71,7 +71,7 @@ export function UploadPanel({
         ref={input}
         type="file"
         multiple
-        accept=".pdf,.pptx,.docx,.txt,.md,image/*"
+        accept=".pdf,.pptx,.ppt,.docx,.doc,.xlsx,.odt,.odp,.ods,.rtf,.epub,.html,.htm,.txt,.md,.csv,image/*"
         className="hidden"
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
@@ -82,7 +82,10 @@ export function UploadPanel({
       <Button type="button" variant="secondary" className="w-full border-dashed" onClick={() => input.current?.click()} disabled={busy}>
         <Upload size={18} /> Choose files from your device
       </Button>
-      <p className="-mt-2 text-xs text-muted">PDF, PowerPoint (.pptx), Word (.docx), photos and text. Up to 50 MB each.</p>
+      <p className="-mt-2 text-xs text-muted">
+        PDF, PowerPoint (.pptx, .ppt), Word (.docx, .doc), Excel (.xlsx), OpenDocument, RTF, e-books (.epub), web pages, text and photos. Up to 300
+        MB each: files over 50 MB are stored in pieces and joined back exactly, with nothing compressed.
+      </p>
 
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Type">
