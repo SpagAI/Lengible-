@@ -14,6 +14,28 @@ export async function GET() {
     supabase.from("process_jobs").select("*").eq("state", "done").gt("finished_at", dayAgo).order("finished_at", { ascending: false }).limit(50),
   ]);
   if (error) return NextResponse.json({ jobs: [], setup: isMissingTable(error) });
+  // Totals over every job (the list above is capped at 300 for speed), so the panel's numbers are exact.
+  const summary = { total: 0, active: 0, waiting: 0, paused: 0, failed: 0, done: 0, percent: 0 };
+  let sum = 0;
+  for (let from = 0; from < 50000; from += 1000) {
+    const { data } = await supabase
+      .from("process_jobs")
+      .select("state, step, progress, not_before, finished_at")
+      .or(`state.neq.done,finished_at.gt.${dayAgo}`)
+      .order("id")
+      .range(from, from + 999);
+    for (const j of data ?? []) {
+      summary.total++;
+      if (j.state === "queued") summary.active++;
+      if (j.state === "queued" && j.not_before && new Date(j.not_before).getTime() > Date.now()) summary.waiting++;
+      if (j.state === "paused" || j.state === "stopped") summary.paused++;
+      if (j.state === "failed") summary.failed++;
+      if (j.state === "done") summary.done++;
+      sum += jobPercent(j as unknown as ProcessJob);
+    }
+    if (!data || data.length < 1000) break;
+  }
+  summary.percent = summary.total ? Math.round(sum / summary.total) : 0;
   const jobs = [...(open ?? []), ...(recent ?? [])].map((j) => {
     const job = j as unknown as ProcessJob;
     const now = Date.now();
@@ -35,12 +57,12 @@ export async function GET() {
       finishedAt: job.finished_at,
     };
   });
-  return NextResponse.json({ jobs });
+  return NextResponse.json({ jobs, summary });
 }
 
 type Body =
   | { action: "enqueue"; items: { fileId?: string; driveItemId?: string; name: string; again?: boolean }[] }
-  | { action: "pause" | "resume" | "stop" | "retry" | "remove"; ids?: string[]; all?: boolean }
+  | { action: "pause" | "resume" | "stop" | "retry" | "remove" | "retry-waiting"; ids?: string[]; all?: boolean }
   | { action: "clear" };
 
 export async function POST(req: NextRequest) {
@@ -69,6 +91,12 @@ export async function POST(req: NextRequest) {
     resume: { from: ["paused", "stopped"], to: { state: "queued", not_before: null, updated_at: now } },
     retry: { from: ["failed", "stopped", "paused", "queued"], to: { state: "queued", attempts: 0, error: null, note: null, not_before: null, locked_until: null, finished_at: null, updated_at: now } },
   };
+  // Everything waiting after a problem, and everything that failed: try again now, from the step each one reached.
+  if (body.action === "retry-waiting") {
+    await supabase.from("process_jobs").update({ not_before: null, note: null, attempts: 0, updated_at: now }).eq("state", "queued").not("not_before", "is", null);
+    await supabase.from("process_jobs").update({ state: "queued", attempts: 0, error: null, note: null, not_before: null, locked_until: null, finished_at: null, updated_at: now }).eq("state", "failed");
+    return NextResponse.json({ ok: true });
+  }
   if (body.action === "remove") {
     let q = supabase.from("process_jobs").delete().in("state", ["paused", "stopped", "failed", "done"]);
     if (!body.all) q = q.in("id", body.ids ?? []);

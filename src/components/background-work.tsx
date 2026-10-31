@@ -61,7 +61,7 @@ const Ctx = createContext<{
   addUploads: (items: NewUpload[]) => void;
   addDriveImports: (items: DriveImport[]) => void;
   addProcessJobs: (files: StoredFile[], again?: boolean) => void;
-  control: (action: "pause" | "resume" | "stop" | "retry" | "remove", ids?: string[]) => Promise<void>;
+  control: (action: "pause" | "resume" | "stop" | "retry" | "remove" | "retry-waiting", ids?: string[]) => Promise<void>;
 } | null>(null);
 export const useBackgroundWork = () => useContext(Ctx)!;
 
@@ -129,6 +129,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
   const [uploads, setUploads] = useState<UploadJob[]>([]);
   const uploadsRef = useRef<UploadJob[]>([]);
   const [server, setServer] = useState<ServerJob[]>([]);
+  const [summary, setSummary] = useState<Summary | null>(null);
   const [setupNeeded, setSetupNeeded] = useState(false);
   const uploading = useRef(false);
   const wakeRef = useRef<() => void>(() => {});
@@ -142,6 +143,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
     try {
       const r = await (await fetch("/api/jobs", { cache: "no-store" })).json();
       setServer(r.jobs ?? []);
+      setSummary(r.summary ?? null);
       setSetupNeeded(!!r.setup);
       return (r.jobs ?? []) as ServerJob[];
     } catch {
@@ -211,10 +213,10 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
   );
   const addProcessJobs = useCallback((files: StoredFile[], again?: boolean) => void enqueue(files.map((f) => ({ fileId: f.id, name: f.name, again }))), [enqueue]);
   const control = useCallback(
-    async (action: "pause" | "resume" | "stop" | "retry" | "remove", ids?: string[]) => {
+    async (action: "pause" | "resume" | "stop" | "retry" | "remove" | "retry-waiting", ids?: string[]) => {
       await post("/api/jobs", ids ? { action, ids } : { action, all: true });
       await refresh();
-      if (action === "resume" || action === "retry") wakeRef.current();
+      if (action === "resume" || action === "retry" || action === "retry-waiting") wakeRef.current();
     },
     [refresh],
   );
@@ -289,6 +291,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
       <Dock
         uploads={uploads}
         server={server}
+        summary={summary}
         setupNeeded={setupNeeded}
         control={control}
         onClear={async () => {
@@ -302,7 +305,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
   );
 }
 
-function JobButtons({ job, control }: { job: ServerJob; control: (a: "pause" | "resume" | "stop" | "retry" | "remove", ids?: string[]) => Promise<void> }) {
+function JobButtons({ job, control }: { job: ServerJob; control: (a: "pause" | "resume" | "stop" | "retry" | "remove" | "retry-waiting", ids?: string[]) => Promise<void> }) {
   const btn = "grid size-7 shrink-0 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-text";
   return (
     <span className="flex shrink-0 items-center">
@@ -335,17 +338,22 @@ function JobButtons({ job, control }: { job: ServerJob; control: (a: "pause" | "
   );
 }
 
+// Totals over every job in the queue (the list itself shows at most 300).
+type Summary = { total: number; active: number; waiting: number; paused: number; failed: number; done: number; percent: number };
+
 function Dock({
   uploads,
   server,
   setupNeeded,
+  summary,
   control,
   onClear,
 }: {
   uploads: UploadJob[];
   server: ServerJob[];
   setupNeeded: boolean;
-  control: (a: "pause" | "resume" | "stop" | "retry" | "remove", ids?: string[]) => Promise<void>;
+  summary: Summary | null;
+  control: (a: "pause" | "resume" | "stop" | "retry" | "remove" | "retry-waiting", ids?: string[]) => Promise<void>;
   onClear: () => void;
 }) {
   const [small, setSmall] = useState(() => store.get("lengible:dock-small"));
@@ -361,7 +369,12 @@ function Dock({
   const finished = server.filter((j) => j.state === "done").length + uploads.filter((u) => !["waiting", "uploading"].includes(u.progress.stage)).length;
   if (!uploads.length && !server.length && !setupNeeded) return null;
   const all = [...server.filter((j) => j.state !== "done"), ...server.filter((j) => j.state === "done")];
-  const overall = server.length ? server.reduce((t, j) => t + j.percent, 0) / server.length : 0;
+  // Exact numbers come from the server's totals; the list below may be only the first 300.
+  const overall = summary?.total ? summary.percent : server.length ? server.reduce((t, j) => t + j.percent, 0) / server.length : 0;
+  const nActive = summary?.active ?? active.length;
+  const nFailed = summary?.failed ?? failed.length;
+  const nPaused = summary?.paused ?? paused.length;
+  const nWaiting = summary?.waiting ?? server.filter((j) => j.state === "queued" && j.waitingUntil).length;
   const working = active.length > 0 || sending.length > 0;
   const position = "fixed right-3 bottom-[calc(76px+env(safe-area-inset-bottom,0px))] z-30 md:right-6 md:bottom-6";
 
@@ -372,14 +385,14 @@ function Dock({
         onClick={() => minimise(false)}
         className={cx(position, "grid size-12 place-items-center rounded-full border border-border bg-surface shadow-lg")}
         aria-label="Show processing progress"
-        title={`${active.length} processing · ${Math.round(overall)}%`}
+        title={`${nActive} processing · ${Math.round(overall)}%`}
       >
         <svg viewBox="0 0 36 36" className="absolute inset-1 -rotate-90" aria-hidden="true">
           <circle cx="18" cy="18" r="15.5" fill="none" stroke="var(--color-surface-2)" strokeWidth="3" />
           <circle cx="18" cy="18" r="15.5" fill="none" stroke="var(--color-brand)" strokeWidth="3" strokeDasharray={`${(overall / 100) * 97.4} 97.4`} strokeLinecap="round" />
         </svg>
         {sending.length ? <Upload size={16} className="text-brand" /> : <Server size={16} className="text-brand" />}
-        {failed.length || paused.length ? (
+        {nFailed || nPaused || nWaiting ? (
           <span className="absolute top-0.5 right-0.5 size-3 rounded-full bg-warn ring-2 ring-surface" />
         ) : (
           working && <span className="absolute top-0.5 right-0.5 size-3 animate-pulse rounded-full bg-brand ring-2 ring-surface" />
@@ -394,29 +407,37 @@ function Dock({
         {working ? <Loader2 size={14} className="animate-spin text-brand" /> : <Server size={14} className="text-brand" />}
         <span className="min-w-0 flex-1 font-semibold">
           {sending.length ? `Uploading ${sending.length} · ` : ""}
-          {active.length ? `Processing ${active.length} file${active.length > 1 ? "s" : ""}` : failed.length ? `${failed.length} need${failed.length === 1 ? "s" : ""} attention` : "Processing finished"}
-          <span className="block text-[11px] font-normal text-muted">On the server: keeps going with Lengible closed</span>
+          {nActive
+            ? `Processing ${nActive} file${nActive > 1 ? "s" : ""}`
+            : nPaused
+              ? `${nPaused} paused`
+              : nFailed
+                ? `${nFailed} need${nFailed === 1 ? "s" : ""} attention`
+                : "Processing finished"}
+          <span className="block text-[11px] font-normal text-muted">
+            {summary ? `${summary.done} done${nWaiting ? ` · ${nWaiting} waiting after a problem` : ""}${nFailed ? ` · ${nFailed} failed` : ""} · ` : ""}on the server, keeps going with Lengible closed
+          </span>
         </span>
-        {server.length > 0 && <ProgressPct pct={overall} label="All files" />}
+        {(summary?.total ?? server.length) > 0 && <ProgressPct pct={overall} label="All files in the queue" />}
         <button type="button" onClick={() => minimise(true)} className="grid size-7 place-items-center rounded-lg text-muted hover:bg-surface-2" aria-label="Minimise">
           <ChevronDown size={16} />
         </button>
       </div>
-      {(active.length > 0 || paused.length > 0 || failed.length > 0) && (
+      {(nActive > 0 || nPaused > 0 || nFailed > 0) && (
         <div className="flex flex-wrap gap-1.5 border-b border-border px-3 py-1.5">
-          {active.length > 0 && (
+          {nActive > 0 && (
             <button type="button" onClick={() => control("pause")} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 font-medium hover:bg-surface-2">
               <Pause size={13} /> Pause all
             </button>
           )}
-          {paused.length > 0 && (
+          {nPaused > 0 && (
             <button type="button" onClick={() => control("resume")} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 font-medium text-brand hover:bg-surface-2">
-              <Play size={13} /> Resume all ({paused.length})
+              <Play size={13} /> Resume all ({nPaused})
             </button>
           )}
-          {failed.length > 0 && (
-            <button type="button" onClick={() => control("retry", failed.map((f) => f.id))} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 font-medium text-brand hover:bg-surface-2">
-              <RotateCcw size={13} /> Retry failed ({failed.length})
+          {nWaiting + nFailed > 0 && (
+            <button type="button" onClick={() => control("retry-waiting")} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 font-medium text-brand hover:bg-surface-2" title="Try again now, from the step each file reached">
+              <RotateCcw size={13} /> Retry now ({nWaiting + nFailed})
             </button>
           )}
         </div>
@@ -425,6 +446,9 @@ function Dock({
         <p className="border-b border-border px-3 py-2 text-warn">
           Server processing needs one setup step: run supabase/migrations/0009_server_processing.sql in Supabase.
         </p>
+      )}
+      {summary && summary.total > server.length && (
+        <p className="border-b border-border px-3 py-1.5 text-muted">Showing the first {server.length} of {summary.total} files.</p>
       )}
       <ul className="max-h-[min(60vh,480px)] divide-y divide-border overflow-y-auto">
         {uploads.map((j) => (

@@ -256,7 +256,11 @@ export function DriveTree({
       text: `${toBring.length} file${toBring.length === 1 ? "" : "s"} coming in and being processed. Watch the bars fill here or in the corner panel; you can leave this page.`,
     });
   };
-  const overall = folderProgress("");
+  // Overall progress of the files you ticked (not the whole Drive).
+  const tickedProgress = items.filter((i) => i.include && i.status !== "skipped" && i.status !== "removed").map(progressOf).filter((x): x is { pct: number; failed: boolean } => !!x);
+  const overall = tickedProgress.length ? Math.round(tickedProgress.reduce((t, x) => t + x.pct, 0) / tickedProgress.length) : null;
+  const tickedCount = items.filter((i) => i.include && i.status !== "skipped" && i.status !== "removed").length;
+  const tickedIn = items.filter((i) => i.include && i.status === "imported").length;
   const nothingYet = !items.some((i) => i.status === "imported");
 
   return (
@@ -305,9 +309,15 @@ export function DriveTree({
           })()}
         </p>
         {!toBring.length && nothingYet && <p className="text-xs text-muted">Tick something below to bring it in.</p>}
-        {overall !== null && !nothingYet && (
+        {tickedCount > 0 && (
+          <p className="text-xs text-muted">
+            {tickedCount} ticked{tickedIn ? ` · ${tickedIn} already in Lengible` : ""}
+            {toBring.length ? ` · ${toBring.length} to bring in` : ""}
+          </p>
+        )}
+        {overall !== null && (
           <div className="flex items-center gap-2 text-xs text-muted">
-            Processed overall <ProgressPct pct={overall} label="Processed overall" />
+            Your {tickedCount} ticked files, processed <ProgressPct pct={overall} label="Processed overall" />
           </div>
         )}
         {storedIn("").length > 0 && (

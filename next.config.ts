@@ -3,6 +3,10 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   // Read PDFs on the server (background processing) with the library as-is, not bundled.
   serverExternalPackages: ["pdfjs-dist"],
+  // …and ship the PDF reader's worker file with the server code that reads PDFs.
+  outputFileTracingIncludes: {
+    "/api/**": ["./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"],
+  },
   turbopack: {
     rules: {
       "*.css": {

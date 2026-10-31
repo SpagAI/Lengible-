@@ -86,6 +86,10 @@ const PICTURE_PAGE_CHARS = 40;
 // so a very long lecture can be read across several runs without starting again.
 export async function extractPdf(buf: Buffer, opts: { from?: number; until?: number } = {}) {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  // The PDF reader's worker runs in this same process. Loading it here also makes sure it's included when the
+  // site is built for Vercel (without it, every PDF failed with "Setting up fake worker failed").
+  const g = globalThis as { pdfjsWorker?: unknown };
+  g.pdfjsWorker ??= await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
   const task = pdfjs.getDocument({ data: new Uint8Array(buf), verbosity: 0 });
   const doc = await task.promise;
   const pages: ServerPage[] = [];
