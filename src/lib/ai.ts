@@ -232,3 +232,45 @@ export const aiLabel = (purpose?: "ally") => {
   const c = purpose === "ally" ? aiConfig.ally : aiConfig;
   return `${providerName[c.provider]} (${c.model})`;
 };
+
+// ——— Search by meaning ———
+// Turns text into a list of 768 numbers ("embedding") so pages and questions can be matched by meaning.
+// Uses Gemini (gemini-embedding-001) when GEMINI_API_KEY is set, otherwise OpenAI; null when neither is set up.
+export const EMBED_DIMS = 768;
+export type EmbedTask = "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY" | "SEMANTIC_SIMILARITY";
+
+export function canEmbed() {
+  return Boolean(process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY);
+}
+
+export async function embedTexts(texts: string[], task: EmbedTask): Promise<number[][] | null> {
+  if (!texts.length) return [];
+  const clipped = texts.map((t) => t.slice(0, 8000) || " ");
+  for (let attempt = 0; ; attempt++) {
+    try {
+      if (process.env.GEMINI_API_KEY) {
+        const r = await geminiClient().models.embedContent({
+          model: process.env.GEMINI_EMBED_MODEL || "gemini-embedding-001",
+          contents: clipped,
+          config: { outputDimensionality: EMBED_DIMS, taskType: task },
+        });
+        return (r.embeddings ?? []).map((e) => e.values ?? []);
+      }
+      if (process.env.OPENAI_API_KEY) {
+        const r = await openaiClient().embeddings.create({ model: process.env.OPENAI_EMBED_MODEL || "text-embedding-3-small", input: clipped, dimensions: EMBED_DIMS });
+        return r.data.map((d) => d.embedding);
+      }
+      return null;
+    } catch (err) {
+      if (!isRetryable(err) || attempt >= aiConfig.maxRetries) {
+        if (statusOf(err) === 429) throw new AIError("You've used your AI allowance for search indexing for now. It carries on in a few minutes.", "rate_limit");
+        if (isRetryable(err)) throw new AIError("The AI servers are busy. Search indexing carries on in a few minutes.", "busy");
+        throw err;
+      }
+      await new Promise((r) => setTimeout(r, aiConfig.retryBaseDelayMs * 2 ** attempt));
+    }
+  }
+}
+
+// Postgres (pgvector) wants "[0.1,0.2,…]".
+export const toVector = (v: number[]) => `[${v.join(",")}]`;

@@ -111,9 +111,47 @@ export type LibraryFile = {
   version: number;
   created_at: string;
   updated_at: string;
+  // From 0009: what the file is (see lib/profile.ts) and a fingerprint of its content.
+  profile?: FileProfile | null;
+  content_hash?: string | null;
 };
 
-export type Chunk = { id: string; user_id: string; file_id: string; course_id: string | null; page: number; content: string };
+export type PaperKind = "mb" | "eopt" | "resit" | "test" | "departmental" | "other";
+export type FileProfile = {
+  course: string | null;
+  posting: string | null;
+  // The class set, e.g. "2K23".
+  set: string | null;
+  kind: "lecture" | "practical" | "tutorial" | "past_questions" | "notes" | "textbook" | "timetable" | "topic_list" | "other";
+  exam: PaperKind | null;
+  exam_year: number | null;
+  lecturer: string | null;
+  topics: string[];
+  theory_or_practical: "theory" | "practical" | "both" | null;
+  summary: string;
+  // You corrected it: the AI leaves it alone.
+  edited?: boolean;
+};
+
+export type ExamQuestion = {
+  id: string;
+  user_id: string;
+  file_id: string;
+  course_id: string | null;
+  page: number | null;
+  exam: PaperKind;
+  class_set: string | null;
+  exam_year: number | null;
+  format: "essay" | "short_note" | "mcq" | "tf" | "osce" | "practical" | "other";
+  number: string | null;
+  question: string;
+  marks: number | null;
+  topic: string | null;
+  cluster_id: string | null;
+  created_at: string;
+};
+
+export type Chunk = { id: string; user_id: string; file_id: string; course_id: string | null; page: number; content: string; embedding?: string | null };
 
 export type ScheduleSession = {
   id: string;
@@ -427,7 +465,12 @@ export type Database = {
       blocks: Table<Block, "id" | "user_id" | "start_date" | "end_date" | "created_at">;
       folders: Table<Folder, "id" | "user_id" | "course_id" | "parent_id" | "created_at">;
       files: Table<LibraryFile, "id" | "user_id" | "course_id" | "folder_id" | "topic_id" | "doc_type" | "mime_type" | "size_bytes" | "status" | "error" | "page_count" | "analysis" | "version" | "created_at" | "updated_at">;
-      chunks: Table<Chunk, "id" | "user_id" | "course_id">;
+      process_jobs: Table<
+        { id: string; user_id: string; file_id: string | null; drive_item_id: string | null; name: string; state: string; step: string; progress: unknown; attempts: number; error: string | null; note: string | null; locked_until: string | null; not_before: string | null; priority: number; created_at: string; updated_at: string; finished_at: string | null },
+        "id" | "user_id" | "file_id" | "drive_item_id" | "state" | "step" | "progress" | "attempts" | "error" | "note" | "locked_until" | "not_before" | "priority" | "created_at" | "updated_at" | "finished_at"
+      >;
+      exam_questions: Table<ExamQuestion & { embedding?: string | null }, "id" | "user_id" | "course_id" | "page" | "exam" | "class_set" | "exam_year" | "format" | "number" | "marks" | "topic" | "cluster_id" | "created_at" | "embedding">;
+      chunks: Table<Chunk, "id" | "user_id" | "course_id" | "embedding">;
       schedule_sessions: Table<ScheduleSession, "id" | "user_id" | "block_id" | "topic_id" | "source_file_id" | "start_time" | "end_time" | "session_type" | "lecturer" | "venue" | "groups" | "created_at">;
       concepts: Table<Concept, "id" | "user_id" | "kind" | "aliases" | "notes" | "created_at">;
       file_concepts: Table<FileConcept, "user_id" | "pages">;
@@ -459,6 +502,11 @@ export type Database = {
     Functions: {
       search_chunks: { Args: { q: string; course?: string | null; lim?: number }; Returns: SearchHit[] };
       deck_counts: { Args: Record<string, never>; Returns: DeckCount[] };
+      match_chunks: {
+        Args: { query_embedding: string; match_count?: number; course_ids?: string[] | null; file_ids?: string[] | null };
+        Returns: { id: string; file_id: string; page: number; content: string; similarity: number }[];
+      };
+      match_questions: { Args: { query_embedding: string; match_count?: number; in_course?: string | null }; Returns: { id: string; cluster_id: string | null; question: string; similarity: number }[] };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;

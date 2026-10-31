@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Read PDFs on the server (background processing) with the library as-is, not bundled.
+  serverExternalPackages: ["pdfjs-dist"],
   turbopack: {
     rules: {
       "*.css": {

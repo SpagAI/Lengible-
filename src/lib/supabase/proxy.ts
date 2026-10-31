@@ -2,7 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { supabaseEnv, isSupabaseConfigured } from "./env";
 
-const PUBLIC_PATHS = ["/login", "/offline", "/setup"];
+// The background worker signs its own requests (CRON_SECRET), so it skips the sign-in check.
+const PUBLIC_PATHS = ["/login", "/offline", "/setup", "/api/worker/tick"];
 
 // Refreshes the Supabase session cookie on every request and keeps signed-out visitors on the login page.
 export async function updateSession(request: NextRequest) {

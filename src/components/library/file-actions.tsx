@@ -6,7 +6,8 @@ import { Download, ExternalLink, ImageIcon, Loader2, RefreshCw, Share2, Sparkles
 import { useSupabase } from "@/lib/supabase/client";
 import { finishExtraction, startReplace } from "@/app/(app)/library/actions";
 import { findPicturePages, PICTURE_PAGE_CHARS } from "@/lib/extract/client";
-import { analyze, MAX_PICTURE_PAGES, readPicturePages, runDrivePipeline, runPipeline, type Progress } from "./pipeline";
+import { analyze, MAX_PICTURE_PAGES, readPicturePages, runPipeline, type Progress } from "./pipeline";
+import { useBackgroundWork } from "@/components/background-work";
 import { StageIcon } from "./upload-panel";
 import { Button } from "@/components/ui";
 import { postJSON } from "@/lib/fetch-json";
@@ -25,6 +26,7 @@ export function FileActions({
 }) {
   const supabase = useSupabase();
   const router = useRouter();
+  const { addProcessJobs } = useBackgroundWork();
   const input = useRef<HTMLInputElement>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [sharing, setSharing] = useState(false);
@@ -115,9 +117,10 @@ export function FileActions({
               type="button"
               variant="secondary"
               disabled={!!busy}
-              onClick={async () => {
-                await runDrivePipeline(file.id, setProgress);
-                router.refresh();
+              onClick={() => {
+                // Processed on the server; follow it in the corner panel.
+                addProcessJobs([{ id: file.id, name: file.name }], file.status !== "uploaded");
+                setProgress({ stage: "waiting", message: "Queued: processing on the server (see the corner panel)." });
               }}
             >
               <RefreshCw size={16} /> {file.status === "uploaded" ? "Process" : "Read again from Drive"}

@@ -78,12 +78,8 @@ export function DriveTree({
     startCheck(async () => {
       const r = await checkDriveLink(sourceId);
       if (!quiet || r.error || !/No changes/.test(r.message ?? "")) setNote(r.error ? { ok: false, text: r.error } : { ok: true, text: r.message! });
-      if (!r.error && auto) {
-        try {
-          const c = await (await fetch("/api/drive/check", { cache: "no-store" })).json();
-          if (c.items?.length) addDriveImports(c.items);
-        } catch {}
-      }
+      // Changes to what you brought in go straight into the processing queue.
+      if (!r.error && auto) await fetch("/api/drive/check", { cache: "no-store" }).catch(() => {});
       router.refresh();
     });
   // Opening the page checks Drive by itself when the last look was over 15 minutes ago.
@@ -140,12 +136,13 @@ export function DriveTree({
   const DONE = ["analysed", "extracted", "no_text"];
   const progressOf = (i: DriveItem): { pct: number; failed: boolean } | null => {
     const job = jobFor.get(i.id) ?? (i.file_id ? jobFor.get(i.file_id) : undefined);
-    if (job && job.progress.stage !== "error") return { pct: progressPercent(job.progress), failed: false };
+    if (job && job.progress.stage !== "error" && job.progress.stage !== "done") return { pct: job.percent ?? progressPercent(job.progress), failed: false };
     if (i.status === "skipped") return null;
     if (i.status === "removed" && !i.file_id) return null;
     const fs = i.file_id ? fileStatus[i.file_id] : undefined;
     if (i.file_id && fs && DONE.includes(fs) && i.status !== "changed") return { pct: 100, failed: false };
-    return { pct: 0, failed: !!job || i.status === "error" || fs === "failed" };
+    if (job?.progress.stage === "done") return { pct: 100, failed: false };
+    return { pct: job?.percent ?? 0, failed: !!job || i.status === "error" || fs === "failed" };
   };
   const inside = (i: DriveItem, path: string) => !path || i.path === path || i.path.startsWith(`${path}/`);
   // A folder's progress is the average of its files' (subfolders included).

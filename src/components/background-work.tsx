@@ -2,51 +2,68 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { BookOpenText, ChevronDown, ChevronRight, Loader2, Pause, Play, Upload } from "lucide-react";
+import Link from "next/link";
+import { ChevronDown, ChevronRight, CircleStop, Loader2, Pause, Play, RotateCcw, Server, Trash2, Upload } from "lucide-react";
 import { useSupabase } from "@/lib/supabase/client";
 import { createFileRecord } from "@/app/(app)/library/actions";
-import { progressPercent, runDrivePipeline, runPipeline, type Progress } from "@/components/library/pipeline";
+import { progressPercent, type Progress } from "@/components/library/pipeline";
 import { ProgressPct } from "@/components/progress-pct";
 import { StageIcon } from "@/components/library/upload-panel";
-import { ProcessDetails } from "@/components/process-details";
-import { postJSON } from "@/lib/fetch-json";
 import { cx } from "@/components/ui";
 
-// Uploads and AI reading live here, above every page, so they keep going while you use the rest of
-// Lengible. A small panel in the corner shows progress and can be minimised to a round button.
+// Processing happens on the server, in a queue (see src/lib/jobs.ts): it keeps going with Lengible closed,
+// and pausing, a lost connection or a retry continues from the last finished step. This provider sends work
+// to that queue, shows it in a small panel in the corner (minimisable to a round button) with Pause, Stop,
+// Resume and Retry, and nudges the queue while Lengible is open so it starts straight away.
+// Files chosen on this device are uploaded from here first.
 
 export type UploadJob = {
   key: string;
   batch: string;
   name: string;
-  // A file chosen on this device, or one to bring in from a Google Drive link.
   file?: File;
-  driveItemId?: string;
-  // Process a file already stored in Lengible (brought in from Drive, or an upload that stopped).
-  processFileId?: string;
-  // For Drive files: read it now (otherwise it is only stored until you tap Process).
-  process?: boolean;
+  driveItemId?: string | null;
+  processFileId?: string | null;
   type: string;
   courseId: string | null;
   folderId: string | null;
   topicId: string | null;
-  id?: string;
+  id?: string | null;
   progress: Progress;
+  // Server jobs: how far along (0–100) and their queue state.
+  percent?: number;
+  server?: ServerJob;
 };
-type NewUpload = Omit<UploadJob, "key" | "progress" | "id" | "name" | "driveItemId" | "processFileId" | "process" | "file"> & { file: File };
+type NewUpload = Omit<UploadJob, "key" | "progress" | "id" | "name" | "driveItemId" | "processFileId" | "file" | "percent" | "server"> & { file: File };
 export type DriveImport = { id: string; name: string; courseId: string | null; changed?: boolean; process?: boolean };
 export type StoredFile = { id: string; name: string };
-type Reading = { id: string; name: string; cursor: number; total: number; left: number; note?: string; retryAt?: number } | null;
+
+export type ServerJob = {
+  id: string;
+  name: string;
+  fileId: string | null;
+  driveItemId: string | null;
+  state: "queued" | "paused" | "stopped" | "done" | "failed";
+  step: string;
+  percent: number;
+  running: boolean;
+  waitingUntil: string | null;
+  note: string | null;
+  error: string | null;
+  done: number | null;
+  total: number | null;
+  finishedAt: string | null;
+};
 
 const Ctx = createContext<{
   jobs: UploadJob[];
   addUploads: (items: NewUpload[]) => void;
   addDriveImports: (items: DriveImport[]) => void;
-  addProcessJobs: (files: StoredFile[]) => void;
+  addProcessJobs: (files: StoredFile[], again?: boolean) => void;
+  control: (action: "pause" | "resume" | "stop" | "retry" | "remove", ids?: string[]) => Promise<void>;
 } | null>(null);
 export const useBackgroundWork = () => useContext(Ctx)!;
 
-const ACTIVE: Progress["stage"][] = ["waiting", "uploading", "reading", "analysing"];
 const store = {
   get: (k: string) => {
     try {
@@ -63,204 +80,172 @@ const store = {
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+const STEP_TEXT: Record<string, string> = {
+  copy: "Bringing in from Drive",
+  text: "Reading the text",
+  pictures: "Reading picture pages with AI",
+  analyse: "Finding topics, drugs and diseases",
+  profile: "Working out what it is",
+  questions: "Saving its past questions",
+  embed: "Indexing for search by meaning",
+  done: "Done",
+};
+
+// A server job in the shape the rest of the app uses (progress stage + percent).
+function fromServer(j: ServerJob): UploadJob {
+  const stage: Progress["stage"] =
+    j.state === "done" ? "done" : j.state === "failed" ? "error" : j.state === "paused" || j.state === "stopped" ? "paused" : j.running ? "analysing" : "waiting";
+  return {
+    key: j.id,
+    batch: "server",
+    name: j.name,
+    driveItemId: j.driveItemId,
+    processFileId: j.fileId,
+    id: j.fileId,
+    type: "",
+    courseId: null,
+    folderId: null,
+    topicId: null,
+    progress: { stage, message: j.error ?? j.note ?? undefined, done: j.done ?? undefined, total: j.total ?? undefined },
+    percent: j.percent,
+    server: j,
+  };
+}
+
+async function post(url: string, body?: unknown) {
+  try {
+    const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+    return await res.json().catch(() => ({}));
+  } catch {
+    return {};
+  }
+}
+
 export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
   const supabase = useSupabase();
   const router = useRouter();
-  const [jobs, setJobs] = useState<UploadJob[]>([]);
-  const jobsRef = useRef<UploadJob[]>([]);
-  const running = useRef(false);
+  // Uploads from this device (until they're handed to the server queue).
+  const [uploads, setUploads] = useState<UploadJob[]>([]);
+  const uploadsRef = useRef<UploadJob[]>([]);
+  const [server, setServer] = useState<ServerJob[]>([]);
+  const [setupNeeded, setSetupNeeded] = useState(false);
+  const uploading = useRef(false);
+  const wakeRef = useRef<() => void>(() => {});
 
-  // Keeps the ref in step at once, so the upload loop never sees a stale stage.
-  const update = useCallback((key: string, patch: Partial<UploadJob>) => {
-    jobsRef.current = jobsRef.current.map((j) => (j.key === key ? { ...j, ...patch } : j));
-    setJobs(jobsRef.current);
+  const updateUpload = useCallback((key: string, patch: Partial<UploadJob>) => {
+    uploadsRef.current = uploadsRef.current.map((j) => (j.key === key ? { ...j, ...patch } : j));
+    setUploads(uploadsRef.current);
   }, []);
 
-  // Drive: the server copies the file into your storage, then this device reads it like an upload.
-  const bringInFromDrive = useCallback(
-    async (job: UploadJob) => {
-      const first = await postJSON<{
-        status: string;
-        message?: string;
-        fileId?: string;
-        path?: string;
-        name?: string;
-        mime?: string;
-        courseId?: string | null;
-        url?: string;
-        wasProcessed?: boolean;
-        linkOnly?: boolean;
-      }>(`/api/drive/items/${job.driveItemId}/import`);
-      let r = first;
-      // Network drops and server hiccups get one more try; real problems (not shared, too big…) don't.
-      if (r.status === "error" && /connection|server had a problem|took too long|Couldn't bring this file in/i.test(r.message ?? "")) {
-        await new Promise((res) => setTimeout(res, 4000));
-        r = await postJSON<typeof first>(`/api/drive/items/${job.driveItemId}/import`);
-      }
-      if (r.status !== "ok" || (!r.url && !r.linkOnly)) {
-        update(job.key, { progress: { stage: r.status === "busy" ? "done" : "error", message: r.status === "busy" ? "Already brought in elsewhere." : r.message } });
-        return;
-      }
-      if (!job.process && !r.wasProcessed) {
-        // Stored only: it waits in your Library until you tap Process.
-        await postJSON(`/api/drive/items/${job.driveItemId}/done`);
-        update(job.key, { id: r.fileId, progress: { stage: "done", message: r.linkOnly ? "Linked from Drive. Tap Process when you need it." : "Stored. Tap Process when you need it." } });
-        router.refresh();
-        return;
-      }
-      if (r.linkOnly) {
-        update(job.key, { id: r.fileId });
-        await runDrivePipeline(r.fileId!, (progress) => update(job.key, { progress }));
-        await postJSON(`/api/drive/items/${job.driveItemId}/done`);
-        return;
-      }
-      update(job.key, { id: r.fileId, progress: { stage: "uploading", step: "upload", message: "Copied from Google Drive" } });
-      let file: File;
-      try {
-        const blob = await (await fetch(r.url!)).blob();
-        file = new File([blob], r.name!, { type: r.mime });
-      } catch {
-        update(job.key, { progress: { stage: "error", message: "Couldn't open the copied file. Try again from the Drive page." } });
-        return;
-      }
-      await runPipeline(supabase, file, { id: r.fileId!, path: r.path! }, r.courseId ?? null, (progress) => update(job.key, { progress }), { uploaded: true });
-      await postJSON(`/api/drive/items/${job.driveItemId}/done`);
+  const refresh = useCallback(async () => {
+    try {
+      const r = await (await fetch("/api/jobs", { cache: "no-store" })).json();
+      setServer(r.jobs ?? []);
+      setSetupNeeded(!!r.setup);
+      return (r.jobs ?? []) as ServerJob[];
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const enqueue = useCallback(
+    async (items: { fileId?: string; driveItemId?: string; name: string; again?: boolean }[]) => {
+      if (!items.length) return;
+      await post("/api/jobs", { action: "enqueue", items });
+      await refresh();
+      wakeRef.current();
     },
-    [supabase, update, router],
+    [refresh],
   );
 
-  // Process a stored file: read it from the start, the same way as an upload.
-  const processStored = useCallback(
-    async (job: UploadJob) => {
-      const r = await postJSON<{ status: string; message?: string; url?: string; name?: string; mime?: string; path?: string; courseId?: string | null; linkOnly?: boolean }>(
-        `/api/files/${job.processFileId}/prepare`,
-      );
-      if (r.status === "ok" && r.linkOnly) {
-        update(job.key, { id: job.processFileId });
-        await runDrivePipeline(job.processFileId!, (progress) => update(job.key, { progress }));
-        return;
-      }
-      if (r.status !== "ok" || !r.url) {
-        update(job.key, { progress: { stage: "error", message: r.message ?? "Couldn't open the stored file." } });
-        return;
-      }
-      update(job.key, { id: job.processFileId });
-      let file: File;
-      try {
-        const blob = await (await fetch(r.url)).blob();
-        file = new File([blob], r.name!, { type: r.mime || blob.type });
-      } catch {
-        update(job.key, { progress: { stage: "error", message: "Couldn't download the stored file. Check your connection and try again." } });
-        return;
-      }
-      await runPipeline(supabase, file, { id: job.processFileId!, path: r.path! }, r.courseId ?? null, (progress) => update(job.key, { progress }), { uploaded: true });
-    },
-    [supabase, update],
-  );
-
-  // Works through waiting uploads one at a time.
-  const pump = useCallback(async () => {
-    if (running.current) return;
-    running.current = true;
+  // Uploads one at a time from this device, then queues each for processing on the server.
+  const pumpUploads = useCallback(async () => {
+    if (uploading.current) return;
+    uploading.current = true;
     try {
       for (;;) {
-        const job = jobsRef.current.find((j) => j.progress.stage === "waiting");
+        const job = uploadsRef.current.find((j) => j.progress.stage === "waiting");
         if (!job) break;
-        update(job.key, { progress: { stage: "uploading", step: "upload" } });
-        if (job.driveItemId) {
-          await bringInFromDrive(job);
-          continue;
-        }
-        if (job.processFileId) {
-          await processStored(job);
-          router.refresh();
-          continue;
-        }
         const file = job.file!;
-        const record = await createFileRecord({
-          courseId: job.courseId,
-          folderId: job.folderId,
-          topicId: job.topicId,
-          name: file.name,
-          docType: job.type,
-          mime: file.type,
-          size: file.size,
-        });
+        updateUpload(job.key, { progress: { stage: "uploading", step: "upload" } });
+        const record = await createFileRecord({ courseId: job.courseId, folderId: job.folderId, topicId: job.topicId, name: file.name, docType: job.type, mime: file.type, size: file.size });
         if ("error" in record) {
-          update(job.key, { progress: { stage: "error", message: record.error } });
+          updateUpload(job.key, { progress: { stage: "error", message: record.error } });
           continue;
         }
-        update(job.key, { id: record.id });
-        await runPipeline(supabase, file, record as { id: string; path: string }, job.courseId, (progress) => update(job.key, { progress }));
+        const { error } = await supabase.storage.from("library").upload(record.path, file, { contentType: file.type || undefined, upsert: true });
+        if (error) {
+          updateUpload(job.key, { id: record.id, progress: { stage: "error", message: error.message.includes("exceeded") ? "File is bigger than the 50 MB limit." : `Upload failed: ${error.message}` } });
+          continue;
+        }
+        updateUpload(job.key, { id: record.id, progress: { stage: "done", message: "Uploaded. Processing on the server." } });
+        await enqueue([{ fileId: record.id, name: file.name }]);
         router.refresh();
       }
     } finally {
-      running.current = false;
+      uploading.current = false;
     }
-  }, [supabase, router, update, bringInFromDrive, processStored]);
+  }, [supabase, updateUpload, enqueue, router]);
 
   const addUploads = useCallback(
     (items: NewUpload[]) => {
       const added = items.map((i) => ({ ...i, name: i.file.name, key: crypto.randomUUID(), progress: { stage: "waiting" as const } }));
-      jobsRef.current = [...jobsRef.current, ...added];
-      setJobs(jobsRef.current);
-      void pump();
+      uploadsRef.current = [...uploadsRef.current, ...added];
+      setUploads(uploadsRef.current);
+      void pumpUploads();
     },
-    [pump],
+    [pumpUploads],
   );
-
   const addDriveImports = useCallback(
-    (items: DriveImport[]) => {
-      // Skip anything already queued in this tab.
-      const queued = new Set(jobsRef.current.filter((j) => ACTIVE.includes(j.progress.stage)).map((j) => j.driveItemId));
-      const added = items
-        .filter((i) => !queued.has(i.id))
-        .map((i) => ({
-          key: crypto.randomUUID(),
-          batch: "drive",
-          name: i.changed ? `${i.name} (newer version)` : i.name,
-          driveItemId: i.id,
-          process: i.process,
-          type: "",
-          courseId: i.courseId,
-          folderId: null,
-          topicId: null,
-          progress: { stage: "waiting" as const },
-        }));
-      if (!added.length) return;
-      jobsRef.current = [...jobsRef.current, ...added];
-      setJobs(jobsRef.current);
-      void pump();
+    (items: DriveImport[]) => void enqueue(items.map((i) => ({ driveItemId: i.id, name: i.changed ? `${i.name} (newer version)` : i.name, again: i.changed }))),
+    [enqueue],
+  );
+  const addProcessJobs = useCallback((files: StoredFile[], again?: boolean) => void enqueue(files.map((f) => ({ fileId: f.id, name: f.name, again }))), [enqueue]);
+  const control = useCallback(
+    async (action: "pause" | "resume" | "stop" | "retry" | "remove", ids?: string[]) => {
+      await post("/api/jobs", ids ? { action, ids } : { action, all: true });
+      await refresh();
+      if (action === "resume" || action === "retry") wakeRef.current();
     },
-    [pump],
+    [refresh],
   );
 
-  const addProcessJobs = useCallback(
-    (files: StoredFile[]) => {
-      const queued = new Set(jobsRef.current.filter((j) => ACTIVE.includes(j.progress.stage)).map((j) => j.processFileId));
-      const added = files
-        .filter((f) => !queued.has(f.id))
-        .map((f) => ({
-          key: crypto.randomUUID(),
-          batch: "process",
-          name: f.name,
-          processFileId: f.id,
-          type: "",
-          courseId: null,
-          folderId: null,
-          topicId: null,
-          progress: { stage: "waiting" as const },
-        }));
-      if (!added.length) return;
-      jobsRef.current = [...jobsRef.current, ...added];
-      setJobs(jobsRef.current);
-      void pump();
-    },
-    [pump],
-  );
+  // Watches the queue: quickly while work is going on, slowly otherwise. While there's work waiting, it also
+  // nudges the server to carry on now (the minute-by-minute worker does the same with Lengible closed).
+  useEffect(() => {
+    let stop = false;
+    let kicking = false;
+    const kick = async () => {
+      if (kicking) return;
+      kicking = true;
+      await post("/api/worker/kick");
+      kicking = false;
+    };
+    (async () => {
+      await sleep(1500);
+      let lastActive = 0;
+      while (!stop) {
+        const jobs = await refresh();
+        const waiting = (jobs ?? []).filter((j) => j.state === "queued");
+        const ready = waiting.filter((j) => !j.running && (!j.waitingUntil || new Date(j.waitingUntil).getTime() <= Date.now()));
+        if (ready.length) void kick();
+        if (waiting.length < lastActive) router.refresh();
+        lastActive = waiting.length;
+        await new Promise<void>((r) => {
+          const t = setTimeout(r, waiting.length ? 4000 : 30_000);
+          wakeRef.current = () => {
+            clearTimeout(t);
+            r();
+          };
+        });
+      }
+    })();
+    return () => {
+      stop = true;
+    };
+  }, [refresh, router]);
 
-  // Your Drive links are checked when Lengible opens and then every hour while it's open: new files
-  // and newer versions are brought in by themselves.
+  // Drive links are checked when Lengible opens and every hour while it's open (changes go into the queue).
   useEffect(() => {
     let stop = false;
     (async () => {
@@ -268,7 +253,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
       while (!stop) {
         try {
           const r = await (await fetch("/api/drive/check", { cache: "no-store" })).json();
-          if (!stop && r.items?.length) addDriveImports(r.items);
+          if (!stop && r.queued) wakeRef.current();
         } catch {}
         await sleep(3600_000);
       }
@@ -276,139 +261,99 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
     return () => {
       stop = true;
     };
-  }, [addDriveImports]);
+  }, []);
 
-  // Closing the tab stops an upload; warn first.
-  const uploading = jobs.some((j) => j.file && ACTIVE.includes(j.progress.stage) && j.progress.stage !== "analysing");
+  // Closing the tab stops an upload from this device (server processing carries on); warn first.
+  const uploadingNow = uploads.some((j) => ["waiting", "uploading"].includes(j.progress.stage));
   useEffect(() => {
-    if (!uploading) return;
+    if (!uploadingNow) return;
     const warn = (e: BeforeUnloadEvent) => e.preventDefault();
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [uploading]);
+  }, [uploadingNow]);
 
-  const reading = useReadingQueue();
+  const jobs = [...uploads, ...server.map(fromServer)];
 
   return (
-    <Ctx.Provider value={{ jobs, addUploads, addDriveImports, addProcessJobs }}>
+    <Ctx.Provider value={{ jobs, addUploads, addDriveImports, addProcessJobs, control }}>
       {children}
       <Dock
-        jobs={jobs}
-        reading={reading}
-        onClear={() => {
-          jobsRef.current = jobsRef.current.filter((j) => ACTIVE.includes(j.progress.stage));
-          setJobs(jobsRef.current);
+        uploads={uploads}
+        server={server}
+        setupNeeded={setupNeeded}
+        control={control}
+        onClear={async () => {
+          uploadsRef.current = uploadsRef.current.filter((j) => ["waiting", "uploading"].includes(j.progress.stage));
+          setUploads(uploadsRef.current);
+          await post("/api/jobs", { action: "clear" });
+          await refresh();
         }}
       />
     </Ctx.Provider>
   );
 }
 
-// Reads your uploads with the AI while Lengible is open (any page, any device, also in a background tab),
-// carrying on where it stopped. Waits and tries again later when the free AI allowance runs out.
-function useReadingQueue() {
-  const router = useRouter();
-  const [now, setNow] = useState<Reading>(null);
-  const [paused, setPausedState] = useState(() => store.get("lengible:reading-paused"));
-  const pausedRef = useRef(paused);
-  useEffect(() => {
-    pausedRef.current = paused;
-  }, [paused]);
-  // "Try now" ends the current wait early.
-  const wake = useRef<(() => void) | null>(null);
-  const nap = (ms: number) =>
-    new Promise<void>((r) => {
-      const t = setTimeout(r, ms);
-      wake.current = () => {
-        clearTimeout(t);
-        r();
-      };
-    });
-
-  useEffect(() => {
-    let stop = false;
-    (async () => {
-      let backoff = 60_000;
-      await sleep(4000); // let the page load first
-      while (!stop) {
-        if (pausedRef.current) {
-          await sleep(3000);
-          continue;
-        }
-        let next: { file: Omit<NonNullable<Reading>, "left" | "note"> | null; left?: number };
-        try {
-          next = await (await fetch("/api/library/queue", { cache: "no-store" })).json();
-        } catch {
-          await sleep(60_000);
-          continue;
-        }
-        if (!next.file) {
-          setNow(null);
-          await sleep(120_000);
-          continue;
-        }
-        const f = next.file;
-        const left = next.left ?? 1;
-        setNow({ ...f, left });
-        const r = await postJSON<{ status: string; message?: string; cursor?: number; total?: number }>(`/api/files/${f.id}/analyze`);
-        if (r.status === "more") {
-          backoff = 60_000;
-          setNow({ ...f, cursor: r.cursor ?? f.cursor, total: r.total ?? f.total, left });
-          continue;
-        }
-        if (r.status === "done" || r.status === "skipped" || r.status === "review") {
-          backoff = 60_000;
-          router.refresh();
-          continue;
-        }
-        // Out of free AI allowance, AI busy, being read elsewhere, or an error: wait, then try again (longer each time).
-        const wait = r.status === "busy" ? 30_000 : backoff;
-        setNow({ ...f, left, note: r.status === "busy" ? "Being read on another device or upload" : r.message, retryAt: Date.now() + wait });
-        await nap(wait);
-        if (r.status !== "busy") backoff = Math.min(backoff * 2, 30 * 60_000);
-      }
-    })();
-    return () => {
-      stop = true;
-    };
-  }, [router]);
-
-  const setPaused = (v: boolean) => {
-    setPausedState(v);
-    store.set("lengible:reading-paused", v);
-  };
-  return { now, paused, setPaused, retryNow: () => wake.current?.() };
+function JobButtons({ job, control }: { job: ServerJob; control: (a: "pause" | "resume" | "stop" | "retry" | "remove", ids?: string[]) => Promise<void> }) {
+  const btn = "grid size-7 shrink-0 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-text";
+  return (
+    <span className="flex shrink-0 items-center">
+      {job.state === "queued" && (
+        <button type="button" className={btn} onClick={() => control("pause", [job.id])} aria-label={`Pause ${job.name}`} title="Pause">
+          <Pause size={14} />
+        </button>
+      )}
+      {(job.state === "paused" || job.state === "stopped") && (
+        <button type="button" className={btn} onClick={() => control("resume", [job.id])} aria-label={`Resume ${job.name}`} title="Resume from where it stopped">
+          <Play size={14} />
+        </button>
+      )}
+      {(job.state === "queued" || job.state === "paused") && (
+        <button type="button" className={btn} onClick={() => control("stop", [job.id])} aria-label={`Stop ${job.name}`} title="Stop (keeps what's done)">
+          <CircleStop size={14} />
+        </button>
+      )}
+      {(job.state === "failed" || (job.state === "queued" && !!job.waitingUntil)) && (
+        <button type="button" className={btn} onClick={() => control("retry", [job.id])} aria-label={`Retry ${job.name}`} title="Retry now from the step where it stopped">
+          <RotateCcw size={14} />
+        </button>
+      )}
+      {(job.state === "failed" || job.state === "stopped") && (
+        <button type="button" className={btn} onClick={() => control("remove", [job.id])} aria-label={`Remove ${job.name} from the list`} title="Remove from the list (the file stays)">
+          <Trash2 size={14} />
+        </button>
+      )}
+    </span>
+  );
 }
 
-const stageText: Record<Progress["stage"], string> = {
-  waiting: "Waiting",
-  uploading: "Uploading…",
-  reading: "Reading text…",
-  analysing: "Reading with AI…",
-  done: "Done",
-  review: "Ready to review",
-  no_text: "Saved (no text found)",
-  paused: "Saved, AI paused",
-  error: "Failed",
-};
-
-function Dock({ jobs, reading, onClear }: { jobs: UploadJob[]; reading: ReturnType<typeof useReadingQueue>; onClear: () => void }) {
+function Dock({
+  uploads,
+  server,
+  setupNeeded,
+  control,
+  onClear,
+}: {
+  uploads: UploadJob[];
+  server: ServerJob[];
+  setupNeeded: boolean;
+  control: (a: "pause" | "resume" | "stop" | "retry" | "remove", ids?: string[]) => Promise<void>;
+  onClear: () => void;
+}) {
   const [small, setSmall] = useState(() => store.get("lengible:dock-small"));
-  // Which task's details are open. Unset = the one that's running (or needs attention) opens by itself.
-  const [openKey, setOpenKey] = useState<string | null | undefined>(undefined);
+  const [openKey, setOpenKey] = useState<string | null>(null);
   const minimise = (v: boolean) => {
     setSmall(v);
     store.set("lengible:dock-small", v);
   };
-  const active = jobs.filter((j) => ACTIVE.includes(j.progress.stage));
-  const r = reading.now;
-  if (!jobs.length && !r) return null;
-  const pct = r?.total ? Math.round((100 * r.cursor) / r.total) : 0;
-  const working = active.length > 0 || (!!r && !reading.paused && !r.note);
-  const needsYou = jobs.find((j) => ["error", "paused", "review"].includes(j.progress.stage));
-  const autoKey = active[0]?.key ?? needsYou?.key ?? (r ? "reader" : jobs.at(-1)?.key);
-  const shown = openKey === undefined ? autoKey : openKey;
-  const toggle = (key: string) => setOpenKey(shown === key ? null : key);
+  const active = server.filter((j) => j.state === "queued");
+  const sending = uploads.filter((j) => ["waiting", "uploading"].includes(j.progress.stage));
+  const paused = server.filter((j) => j.state === "paused" || j.state === "stopped");
+  const failed = server.filter((j) => j.state === "failed");
+  const finished = server.filter((j) => j.state === "done").length + uploads.filter((u) => !["waiting", "uploading"].includes(u.progress.stage)).length;
+  if (!uploads.length && !server.length && !setupNeeded) return null;
+  const all = [...server.filter((j) => j.state !== "done"), ...server.filter((j) => j.state === "done")];
+  const overall = server.length ? server.reduce((t, j) => t + j.percent, 0) / server.length : 0;
+  const working = active.length > 0 || sending.length > 0;
   const position = "fixed right-3 bottom-[calc(76px+env(safe-area-inset-bottom,0px))] z-30 md:right-6 md:bottom-6";
 
   if (small) {
@@ -417,17 +362,15 @@ function Dock({ jobs, reading, onClear }: { jobs: UploadJob[]; reading: ReturnTy
         type="button"
         onClick={() => minimise(false)}
         className={cx(position, "grid size-12 place-items-center rounded-full border border-border bg-surface shadow-lg")}
-        aria-label="Show uploads and reading progress"
-        title={r ? `Reading ${r.name}: ${pct}%` : `${active.length} uploading`}
+        aria-label="Show processing progress"
+        title={`${active.length} processing · ${Math.round(overall)}%`}
       >
-        {/* Ring shows reading progress; the dot shows something is still running. */}
         <svg viewBox="0 0 36 36" className="absolute inset-1 -rotate-90" aria-hidden="true">
           <circle cx="18" cy="18" r="15.5" fill="none" stroke="var(--color-surface-2)" strokeWidth="3" />
-          {r && <circle cx="18" cy="18" r="15.5" fill="none" stroke="var(--color-brand)" strokeWidth="3" strokeDasharray={`${(pct / 100) * 97.4} 97.4`} strokeLinecap="round" />}
+          <circle cx="18" cy="18" r="15.5" fill="none" stroke="var(--color-brand)" strokeWidth="3" strokeDasharray={`${(overall / 100) * 97.4} 97.4`} strokeLinecap="round" />
         </svg>
-        {active.length ? <Upload size={16} className="text-brand" /> : <BookOpenText size={16} className="text-brand" />}
-        {/* Amber dot: something needs you (paused, failed or ready to review); blue dot: working. */}
-        {needsYou || r?.note ? (
+        {sending.length ? <Upload size={16} className="text-brand" /> : <Server size={16} className="text-brand" />}
+        {failed.length || paused.length ? (
           <span className="absolute top-0.5 right-0.5 size-3 rounded-full bg-warn ring-2 ring-surface" />
         ) : (
           working && <span className="absolute top-0.5 right-0.5 size-3 animate-pulse rounded-full bg-brand ring-2 ring-surface" />
@@ -437,99 +380,117 @@ function Dock({ jobs, reading, onClear }: { jobs: UploadJob[]; reading: ReturnTy
   }
 
   return (
-    <div className={cx(position, "w-[min(92vw,380px)] overflow-hidden rounded-2xl border border-border bg-surface/95 text-xs shadow-lg backdrop-blur")}>
+    <div className={cx(position, "w-[min(92vw,400px)] overflow-hidden rounded-2xl border border-border bg-surface/95 text-xs shadow-lg backdrop-blur")}>
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-        {working ? <Loader2 size={14} className="animate-spin text-brand" /> : <BookOpenText size={14} className="text-brand" />}
-        <span className="flex-1 font-semibold">{active.length ? `Processing ${active.length} file${active.length > 1 ? "s" : ""}` : jobs.length ? "Finished" : "Background reading"}</span>
-        {jobs.length > 0 && (
-          // All tasks together: each file counts equally.
-          <ProgressPct pct={jobs.reduce((t, j) => t + progressPercent(j.progress), 0) / jobs.length} label="All files" />
-        )}
-        <span className="hidden text-muted sm:inline">keeps going while you browse</span>
+        {working ? <Loader2 size={14} className="animate-spin text-brand" /> : <Server size={14} className="text-brand" />}
+        <span className="min-w-0 flex-1 font-semibold">
+          {sending.length ? `Uploading ${sending.length} · ` : ""}
+          {active.length ? `Processing ${active.length} file${active.length > 1 ? "s" : ""}` : failed.length ? `${failed.length} need${failed.length === 1 ? "s" : ""} attention` : "Processing finished"}
+          <span className="block text-[11px] font-normal text-muted">On the server: keeps going with Lengible closed</span>
+        </span>
+        {server.length > 0 && <ProgressPct pct={overall} label="All files" />}
         <button type="button" onClick={() => minimise(true)} className="grid size-7 place-items-center rounded-lg text-muted hover:bg-surface-2" aria-label="Minimise">
           <ChevronDown size={16} />
         </button>
       </div>
-      <ul className="max-h-[min(65vh,520px)] divide-y divide-border overflow-y-auto">
-        {jobs.map((j) => (
-          <li key={j.key} className="px-3 py-2">
-            <button type="button" onClick={() => toggle(j.key)} className="flex w-full items-start gap-2 text-left" aria-expanded={shown === j.key}>
-              <StageIcon stage={j.progress.stage} />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate font-medium">{j.name}</span>
-                <span className={cx("block", j.progress.stage === "error" ? "line-clamp-3 text-danger" : "truncate text-muted")}>
-                  {stageText[j.progress.stage]}
-                  {/* Why it failed, right here (no need to open the details). */}
-                  {j.progress.stage === "error" && j.progress.message ? ` · ${j.progress.message}` : ""}
-                  {j.progress.step === "ai" && j.progress.total ? ` · page ${j.progress.done ?? 0} of ${j.progress.total}` : ""}
-                  {j.progress.step === "pictures" && j.progress.total ? ` · picture ${j.progress.done ?? 0} of ${j.progress.total}` : ""}
-                </span>
-              </span>
-              <ProgressPct pct={progressPercent(j.progress)} failed={j.progress.stage === "error"} className="mt-0.5" />
-              {shown === j.key ? <ChevronDown size={16} className="mt-0.5 shrink-0 text-muted" /> : <ChevronRight size={16} className="mt-0.5 shrink-0 text-muted" />}
+      {(active.length > 0 || paused.length > 0 || failed.length > 0) && (
+        <div className="flex flex-wrap gap-1.5 border-b border-border px-3 py-1.5">
+          {active.length > 0 && (
+            <button type="button" onClick={() => control("pause")} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 font-medium hover:bg-surface-2">
+              <Pause size={13} /> Pause all
             </button>
-            {shown === j.key && (
-              <div className="mt-2">
-                <ProcessDetails
-                  fileId={j.id}
-                  live={{
-                    step: ACTIVE.includes(j.progress.stage) ? (j.progress.step ?? (j.progress.stage === "uploading" ? "upload" : undefined)) : undefined,
-                    done: j.progress.done,
-                    total: j.progress.total,
-                    note: ["paused", "error"].includes(j.progress.stage) ? j.progress.message : undefined,
-                    failed: j.progress.stage === "error",
-                  }}
-                />
-              </div>
-            )}
+          )}
+          {paused.length > 0 && (
+            <button type="button" onClick={() => control("resume")} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 font-medium text-brand hover:bg-surface-2">
+              <Play size={13} /> Resume all ({paused.length})
+            </button>
+          )}
+          {failed.length > 0 && (
+            <button type="button" onClick={() => control("retry", failed.map((f) => f.id))} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 font-medium text-brand hover:bg-surface-2">
+              <RotateCcw size={13} /> Retry failed ({failed.length})
+            </button>
+          )}
+        </div>
+      )}
+      {setupNeeded && (
+        <p className="border-b border-border px-3 py-2 text-warn">
+          Server processing needs one setup step: run supabase/migrations/0009_server_processing.sql in Supabase.
+        </p>
+      )}
+      <ul className="max-h-[min(60vh,480px)] divide-y divide-border overflow-y-auto">
+        {uploads.map((j) => (
+          <li key={j.key} className="flex items-start gap-2 px-3 py-2">
+            <StageIcon stage={j.progress.stage} />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate font-medium">{j.name}</span>
+              <span className={cx("block", j.progress.stage === "error" ? "text-danger" : "text-muted")}>
+                {j.progress.stage === "uploading" ? "Uploading from this device…" : j.progress.stage === "waiting" ? "Waiting to upload" : j.progress.message}
+              </span>
+            </span>
+            <ProgressPct pct={progressPercent(j.progress) === 100 ? 10 : progressPercent(j.progress)} failed={j.progress.stage === "error"} className="mt-0.5" />
           </li>
         ))}
-        {r && (
-          <li className="px-3 py-2">
-            <div className="flex items-center gap-2">
-              <button type="button" onClick={() => toggle("reader")} className="flex min-w-0 flex-1 items-center gap-2 text-left" aria-expanded={shown === "reader"}>
-                <BookOpenText size={16} className={cx("shrink-0 text-brand", !reading.paused && !r.note && "animate-pulse")} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium">
-                    {reading.paused ? "Reading paused" : "Reading"} · {r.name}
-                  </span>
-                  <span className="block truncate text-muted">
-                    {r.note ? "Waiting, tap for details" : r.total ? `page ${r.cursor} of ${r.total} (${pct}%)` : "starting…"}
-                    {r.left > 1 ? ` · ${r.left - 1} more file${r.left > 2 ? "s" : ""} waiting` : ""}
-                  </span>
-                  {r.total > 0 && shown !== "reader" && (
-                    <span className="mt-1 block h-1 overflow-hidden rounded-full bg-surface-2">
-                      <span className="block h-full bg-brand" style={{ width: `${pct}%` }} />
+        {all.map((j) => {
+          const open = openKey === j.id;
+          return (
+            <li key={j.id} className="px-3 py-2">
+              <div className="flex items-start gap-2">
+                <button type="button" onClick={() => setOpenKey(open ? null : j.id)} className="flex min-w-0 flex-1 items-start gap-2 text-left" aria-expanded={open}>
+                  <StageIcon stage={fromServer(j).progress.stage} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium">{j.name}</span>
+                    <span className={cx("block", j.state === "failed" ? "line-clamp-3 text-danger" : "truncate text-muted")}>
+                      {j.state === "done"
+                        ? "Processed"
+                        : j.state === "failed"
+                          ? `Failed at “${STEP_TEXT[j.step] ?? j.step}” · ${j.error ?? ""}`
+                          : j.state === "paused"
+                            ? `Paused at “${STEP_TEXT[j.step] ?? j.step}”`
+                            : j.state === "stopped"
+                              ? `Stopped at “${STEP_TEXT[j.step] ?? j.step}”`
+                              : j.waitingUntil
+                                ? j.note ?? "Waiting to carry on"
+                                : j.running
+                                  ? `${STEP_TEXT[j.step] ?? j.step}${j.total ? ` · ${j.done ?? 0} of ${j.total}` : ""}`
+                                  : "In the queue"}
                     </span>
-                  )}
-                </span>
-                {shown === "reader" ? <ChevronDown size={16} className="shrink-0 text-muted" /> : <ChevronRight size={16} className="shrink-0 text-muted" />}
-              </button>
-              <button
-                type="button"
-                onClick={() => reading.setPaused(!reading.paused)}
-                className="grid size-8 shrink-0 place-items-center rounded-lg text-muted hover:bg-surface-2"
-                aria-label={reading.paused ? "Resume reading" : "Pause reading"}
-                title={reading.paused ? "Resume reading" : "Pause reading"}
-              >
-                {reading.paused ? <Play size={15} /> : <Pause size={15} />}
-              </button>
-            </div>
-            {shown === "reader" && (
-              <div className="mt-2">
-                <ProcessDetails
-                  fileId={r.id}
-                  live={{ step: "ai", done: r.cursor, total: r.total, note: r.note, retryAt: r.retryAt, paused: reading.paused }}
-                  onRetryNow={r.note ? reading.retryNow : undefined}
-                />
+                  </span>
+                </button>
+                <ProgressPct pct={j.percent} failed={j.state === "failed"} className="mt-0.5" />
+                <JobButtons job={j} control={control} />
               </div>
-            )}
-          </li>
-        )}
+              {open && (
+                <div className="mt-2 space-y-1 rounded-lg bg-surface-2 p-2 text-[11px]">
+                  <ol className="space-y-0.5">
+                    {["copy", "text", "pictures", "analyse", "profile", "questions", "embed"].map((s) => {
+                      const order = ["copy", "text", "pictures", "analyse", "profile", "questions", "embed", "done"];
+                      const doneStep = order.indexOf(s) < order.indexOf(j.step) || j.state === "done";
+                      const now = s === j.step && j.state !== "done";
+                      return (
+                        <li key={s} className={cx("flex items-center gap-1.5", doneStep ? "text-ok" : now ? "font-medium text-text" : "text-muted")}>
+                          <span className={cx("size-1.5 rounded-full", doneStep ? "bg-ok" : now ? "bg-brand" : "bg-border")} />
+                          {STEP_TEXT[s]}
+                          {now && j.total ? ` (${j.done ?? 0}/${j.total})` : ""}
+                        </li>
+                      );
+                    })}
+                  </ol>
+                  {j.note && j.state !== "done" && <p className="text-muted">{j.note}</p>}
+                  <p className="text-muted">Steps already done are never redone: pausing, a lost connection or a retry continue from the current step.</p>
+                  {j.fileId && (
+                    <Link href={`/library/file/${j.fileId}`} className="inline-block font-medium text-brand">
+                      Open file →
+                    </Link>
+                  )}
+                </div>
+              )}
+            </li>
+          );
+        })}
       </ul>
-      {jobs.length > active.length && (
-        <button type="button" onClick={onClear} className="w-full border-t border-border px-3 py-1.5 text-left text-muted hover:bg-surface-2">
-          Clear finished uploads
+      {finished > 0 && (
+        <button type="button" onClick={onClear} className="flex w-full items-center gap-1 border-t border-border px-3 py-1.5 text-left text-muted hover:bg-surface-2">
+          <ChevronRight size={12} /> Clear finished ({finished})
         </button>
       )}
     </div>
