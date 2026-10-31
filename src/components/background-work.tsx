@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ChevronDown, ChevronRight, CircleStop, Loader2, Pause, Play, RotateCcw, Server, Trash2, Upload } from "lucide-react";
+import { ChevronDown, ChevronRight, CircleStop, GripVertical, Loader2, Maximize2, Minimize2, Pause, Play, RotateCcw, Server, Trash2, Upload } from "lucide-react";
 import { useSupabase } from "@/lib/supabase/client";
 import { createFileRecord } from "@/app/(app)/library/actions";
 import { progressPercent, type Progress } from "@/components/library/pipeline";
@@ -358,6 +358,36 @@ function Dock({
 }) {
   const [small, setSmall] = useState(() => store.get("lengible:dock-small"));
   const [openKey, setOpenKey] = useState<string | null>(null);
+  // Width: drag the left edge (or tap Widen) to see full file names. Remembered on this device.
+  const NARROW = 400;
+  const widest = () => (typeof window === "undefined" ? 1200 : Math.max(NARROW, window.innerWidth - 32));
+  const [width, setWidth] = useState(() => {
+    try {
+      return Math.min(widest(), Math.max(320, Number(localStorage.getItem("lengible:dock-width")) || NARROW));
+    } catch {
+      return NARROW;
+    }
+  });
+  const saveWidth = (w: number) => {
+    const v = Math.round(Math.min(widest(), Math.max(320, w)));
+    setWidth(v);
+    try {
+      localStorage.setItem("lengible:dock-width", String(v));
+    } catch {}
+  };
+  const startDrag = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = width;
+    const move = (ev: PointerEvent) => saveWidth(startW + (startX - ev.clientX));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  const wide = width > NARROW + 40;
   const minimise = (v: boolean) => {
     setSmall(v);
     store.set("lengible:dock-small", v);
@@ -402,7 +432,21 @@ function Dock({
   }
 
   return (
-    <div className={cx(position, "w-[min(92vw,400px)] overflow-hidden rounded-2xl border border-border bg-surface/95 text-xs shadow-lg backdrop-blur")}>
+    <div
+      className={cx(position, "max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-2xl border border-border bg-surface/95 text-xs shadow-lg backdrop-blur")}
+      style={{ width }}
+    >
+      {/* Drag this edge to the left to widen the panel (to the right to narrow it). */}
+      <div
+        onPointerDown={startDrag}
+        className="group absolute inset-y-0 left-0 z-10 flex w-3 cursor-ew-resize touch-none items-center justify-center hover:bg-brand/10"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Drag to resize the panel"
+        title="Drag to widen or narrow"
+      >
+        <GripVertical size={12} className="text-muted group-hover:text-brand" />
+      </div>
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
         {working ? <Loader2 size={14} className="animate-spin text-brand" /> : <Server size={14} className="text-brand" />}
         <span className="min-w-0 flex-1 font-semibold">
@@ -419,6 +463,15 @@ function Dock({
           </span>
         </span>
         {(summary?.total ?? server.length) > 0 && <ProgressPct pct={overall} label="All files in the queue" />}
+        <button
+          type="button"
+          onClick={() => saveWidth(wide ? NARROW : widest())}
+          className="grid size-7 place-items-center rounded-lg text-muted hover:bg-surface-2"
+          aria-label={wide ? "Make the panel narrow" : "Widen the panel"}
+          title={wide ? "Narrow" : "Widen to see full names"}
+        >
+          {wide ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+        </button>
         <button type="button" onClick={() => minimise(true)} className="grid size-7 place-items-center rounded-lg text-muted hover:bg-surface-2" aria-label="Minimise">
           <ChevronDown size={16} />
         </button>
@@ -455,7 +508,9 @@ function Dock({
           <li key={j.key} className="flex items-start gap-2 px-3 py-2">
             <StageIcon stage={j.progress.stage} />
             <span className="min-w-0 flex-1">
-              <span className="block truncate font-medium">{j.name}</span>
+              <span className="block font-medium break-words" title={j.name}>
+                      {j.name}
+                    </span>
               <span className={cx("block", j.progress.stage === "error" ? "text-danger" : "text-muted")}>
                 {j.progress.stage === "uploading" ? (j.progress.message ?? "Uploading from this device…") : j.progress.stage === "waiting" ? "Waiting to upload" : j.progress.message}
               </span>
@@ -471,7 +526,9 @@ function Dock({
                 <button type="button" onClick={() => setOpenKey(open ? null : j.id)} className="flex min-w-0 flex-1 items-start gap-2 text-left" aria-expanded={open}>
                   <StageIcon stage={fromServer(j).progress.stage} />
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate font-medium">{j.name}</span>
+                    <span className="block font-medium break-words" title={j.name}>
+                      {j.name}
+                    </span>
                     <span className={cx("block", j.state === "failed" ? "line-clamp-3 text-danger" : "truncate text-muted")}>
                       {j.state === "done"
                         ? "Processed"
