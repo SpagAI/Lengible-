@@ -492,7 +492,8 @@ function Dock({
       >
         <GripVertical size={14} className="text-muted group-hover:text-brand" />
       </div>
-      <div className="overflow-hidden rounded-2xl border border-border bg-surface/95 text-xs shadow-lg backdrop-blur">
+      {/* Never taller than the screen: the header and buttons stay in view, only the file list scrolls. */}
+      <div className="flex max-h-[calc(100dvh-76px-1.5rem-env(safe-area-inset-bottom,0px))] flex-col overflow-hidden rounded-2xl border border-border bg-surface/95 text-xs shadow-lg backdrop-blur md:max-h-[calc(100dvh-4.5rem)]">
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
         {working ? <Loader2 size={14} className="animate-spin text-brand" /> : <Server size={14} className="text-brand" />}
         <span className="min-w-0 flex-1 font-semibold">
@@ -566,7 +567,7 @@ function Dock({
       {summary && summary.total > server.length && (
         <p className="border-b border-border px-3 py-1.5 text-muted">Showing the first {server.length} of {summary.total} files.</p>
       )}
-      <ul className="max-h-[min(60vh,480px)] divide-y divide-border overflow-y-auto">
+      <ul className="max-h-[520px] min-h-24 flex-1 divide-y divide-border overflow-y-auto">
         {uploads.map((j) => (
           <li key={j.key} className="flex items-start gap-2 px-3 py-2">
             <StageIcon stage={j.progress.stage} />
