@@ -353,10 +353,16 @@ type Summary = {
   percent: number;
   waitingAi?: number;
   dailyUsedUp?: boolean;
+  resumeAt?: string | null;
   doneToday?: number;
   lastProgress?: string | null;
   minsSince?: number | null;
 };
+
+// "Sun 1 Nov, 9:05 am", in the time zone of the device you're looking on.
+export function when(iso: string) {
+  return new Date(iso).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit", hour12: true });
+}
 
 function ago(m: number) {
   if (m < 1) return "just now";
@@ -464,7 +470,7 @@ function Dock({
         onClick={() => minimise(false)}
         className={cx(position, "grid size-12 place-items-center rounded-full border border-border bg-surface shadow-lg")}
         aria-label="Show processing progress"
-        title={`${nActive} processing · ${Math.round(overall)}%`}
+        title={summary?.dailyUsedUp && summary.resumeAt ? `Google's daily AI allowance is used up · resumes ${when(summary.resumeAt)}` : `${nActive} processing · ${Math.round(overall)}%`}
       >
         <svg viewBox="0 0 36 36" className="absolute inset-1 -rotate-90" aria-hidden="true">
           <circle cx="18" cy="18" r="15.5" fill="none" stroke="var(--color-surface-2)" strokeWidth="3" />
@@ -499,7 +505,9 @@ function Dock({
         {working ? <Loader2 size={14} className="animate-spin text-brand" /> : <Server size={14} className="text-brand" />}
         <span className="min-w-0 flex-1 font-semibold">
           {sending.length ? `Uploading ${sending.length} · ` : ""}
-          {nActive
+          {summary?.dailyUsedUp && summary.resumeAt
+            ? `Daily AI limit reached · resumes ${when(summary.resumeAt)}`
+            : nActive
             ? `Processing ${nActive} file${nActive > 1 ? "s" : ""}`
             : nPaused
               ? `${nPaused} paused`
@@ -507,7 +515,7 @@ function Dock({
                 ? `${nFailed} need${nFailed === 1 ? "s" : ""} attention`
                 : "Processing finished"}
           <span className="block text-[11px] font-normal text-muted">
-            {summary ? `${summary.done} done${nWaiting ? ` · ${nWaiting} waiting after a problem` : ""}${nFailed ? ` · ${nFailed} failed` : ""} · ` : ""}{workerReady ? "on the server, keeps going with Lengible closed" : "moves only while Lengible is open"}
+            {summary ? `${summary.done} done${summary.waitingAi ? ` · ${summary.waitingAi} waiting for Google's AI limit` : ""}${nWaiting - (summary.waitingAi ?? 0) > 0 ? ` · ${nWaiting - (summary.waitingAi ?? 0)} waiting after a problem` : ""}${nFailed ? ` · ${nFailed} failed` : ""} · ` : ""}{workerReady ? "on the server, keeps going with Lengible closed" : "moves only while Lengible is open"}
           </span>
         </span>
         {(summary?.total ?? server.length) > 0 && <ProgressPct pct={overall} label="All files in the queue" />}
@@ -557,9 +565,16 @@ function Dock({
       )}
       {summary && (summary.waitingAi ?? 0) > 0 && (
         <p className="border-b border-border px-3 py-2 text-warn">
-          {summary.dailyUsedUp
-            ? "Google's free daily AI allowance is used up. Files carry on by themselves after it resets (around 8–9 am Nigerian time). A paid Gemini tier (billing on your API key's project) removes this limit."
-            : "Google is limiting how much AI work your key can do right now, so files wait and retry on their own. A paid Gemini tier (billing on your API key's project) removes most of this."}
+          {summary.dailyUsedUp ? (
+            <>
+              <strong className="block">
+                Google&apos;s free daily AI allowance is used up.{summary.resumeAt ? ` Processing resumes automatically on ${when(summary.resumeAt)}.` : ""}
+              </strong>
+              It carries on by itself in the background, even with Lengible closed. A paid Gemini tier (billing on your API key&apos;s project) removes this limit.
+            </>
+          ) : (
+            "Google is limiting how much AI work your key can do right now, so files wait and retry on their own. A paid Gemini tier (billing on your API key's project) removes most of this."
+          )}
         </p>
       )}
       {!workerReady && (summary?.total ?? 0) > 0 && (
@@ -621,7 +636,9 @@ function Dock({
                             : j.state === "stopped"
                               ? `Stopped at “${STEP_TEXT[j.step] ?? j.step}”`
                               : j.waitingUntil
-                                ? j.note ?? "Waiting to carry on"
+                                ? /daily AI allowance/i.test(j.note ?? "")
+                                  ? `Google's daily AI allowance is used up. Resumes automatically on ${when(j.waitingUntil)}.`
+                                  : j.note ?? "Waiting to carry on"
                                 : j.running
                                   ? `${STEP_TEXT[j.step] ?? j.step}${j.total ? ` · ${j.done ?? 0} of ${j.total}` : ""}`
                                   : j.started

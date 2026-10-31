@@ -390,9 +390,8 @@ async function fileBytes(supabase: DB, file: LibraryFile): Promise<Buffer> {
 // the per-minute limit, two minutes when Google's servers are busy.
 function limitWait(message: string, busy = false): Outcome {
   if (isDailyMessage(message)) {
-    const ms = msUntilDailyReset();
-    const h = Math.floor(ms / 3_600_000), m = Math.round((ms % 3_600_000) / 60_000);
-    return { wait: { ms, note: `Google's daily AI allowance is used up. Carries on by itself in about ${h ? `${h} h ` : ""}${m} min, when it resets.` } };
+    // The panel shows the exact date and time (in your own time zone) from not_before.
+    return { wait: { ms: msUntilDailyReset(), note: "Google's daily AI allowance is used up. Resumes automatically when it resets, even with Lengible closed." } };
   }
   return { wait: { ms: busy ? 2 * 60_000 : 90_000, note: `${message.split(".")[0]}. Waiting, then carrying on.` } };
 }
