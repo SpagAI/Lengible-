@@ -1,11 +1,13 @@
 import "server-only";
 import { createHash } from "node:crypto";
 import { GoogleGenAI, ApiError } from "@google/genai";
-import { aiConfig } from "@/config/ai";
+import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
+import { aiConfig, keyFor, providerName, type ModelChoice, type Provider } from "@/config/ai";
 import { createClient } from "@/lib/supabase/server";
 
-// The only file that talks to an AI provider. To switch providers, rewrite
-// callModel() below and keep the exported functions' signatures the same.
+// The only file that talks to an AI provider: Google Gemini, Anthropic Claude or OpenAI ChatGPT,
+// chosen in src/config/ai.ts (AI_PROVIDER for Lengible, ALLY_PROVIDER for the Ally chat).
 
 export class AIError extends Error {
   constructor(
@@ -28,27 +30,52 @@ export type GenerateOptions = {
   files?: { mimeType: string; data: string }[];
   // Set false for answers that should differ each time (e.g. a new day's quiz).
   cache?: boolean;
+  // "ally": the Ally chat, which can use its own provider and model.
+  purpose?: "ally";
 };
 
-let client: GoogleGenAI | null = null;
-function getClient() {
+let gemini: GoogleGenAI | null = null;
+let anthropic: Anthropic | null = null;
+let openai: OpenAI | null = null;
+const notSet = (provider: Provider) =>
+  new AIError(`The ${providerName[provider]} API key isn't set up yet. Add ${keyFor[provider]} to your environment (Vercel → Settings → Environment Variables).`, "not_configured");
+
+function geminiClient() {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new AIError("The Gemini API key isn't set up yet. Add GEMINI_API_KEY to your environment.", "not_configured");
-  }
+  if (!apiKey) throw notSet("gemini");
   // GEMINI_BASE_URL is optional: point it at a proxy or a local stand-in for testing.
   const baseUrl = process.env.GEMINI_BASE_URL;
-  client ??= new GoogleGenAI({ apiKey, ...(baseUrl ? { httpOptions: { baseUrl } } : {}) });
-  return client;
+  gemini ??= new GoogleGenAI({ apiKey, ...(baseUrl ? { httpOptions: { baseUrl } } : {}) });
+  return gemini;
+}
+function anthropicClient() {
+  if (!process.env.ANTHROPIC_API_KEY) throw notSet("anthropic");
+  // Retries are handled below (with the fallback model), so the SDK's own are off.
+  anthropic ??= new Anthropic({ maxRetries: 0 });
+  return anthropic;
+}
+function openaiClient() {
+  if (!process.env.OPENAI_API_KEY) throw notSet("openai");
+  openai ??= new OpenAI({ maxRetries: 0 });
+  return openai;
 }
 
-async function callModel(prompt: string, opts: GenerateOptions, model = aiConfig.model): Promise<string> {
-  const response = await getClient().models.generateContent({
+// Structured output schemas: objects closed to extra keys (Claude and ChatGPT require it).
+function closeObjects(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(closeObjects);
+  if (!schema || typeof schema !== "object") return schema;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(schema)) out[k] = closeObjects(v);
+  if (out.type === "object") out.additionalProperties = false;
+  return out;
+}
+const filesOf = (opts: GenerateOptions) => [...(opts.file ? [opts.file] : []), ...(opts.files ?? [])];
+
+async function callGemini(prompt: string, opts: GenerateOptions, model: string): Promise<string> {
+  const files = filesOf(opts);
+  const response = await geminiClient().models.generateContent({
     model,
-    contents:
-      opts.file || opts.files?.length
-        ? [{ role: "user", parts: [...[...(opts.file ? [opts.file] : []), ...(opts.files ?? [])].map((f) => ({ inlineData: f })), { text: prompt }] }]
-        : prompt,
+    contents: files.length ? [{ role: "user", parts: [...files.map((f) => ({ inlineData: f })), { text: prompt }] }] : prompt,
     config: {
       systemInstruction: opts.system,
       temperature: opts.temperature ?? aiConfig.temperature,
@@ -61,14 +88,73 @@ async function callModel(prompt: string, opts: GenerateOptions, model = aiConfig
   return text;
 }
 
-function isRetryable(err: unknown) {
-  return err instanceof ApiError && (err.status === 429 || err.status === 500 || err.status === 503);
+async function callClaude(prompt: string, opts: GenerateOptions, model: string): Promise<string> {
+  const content: Anthropic.Beta.BetaContentBlockParam[] = [
+    ...filesOf(opts).map((f) =>
+      f.mimeType === "application/pdf"
+        ? ({ type: "document", source: { type: "base64", media_type: "application/pdf", data: f.data } } as const)
+        : ({ type: "image", source: { type: "base64", media_type: f.mimeType as "image/jpeg", data: f.data } } as const),
+    ),
+    { type: "text", text: prompt },
+  ];
+  // Current Claude models choose how much to think by themselves (effort sets how hard); sampling settings aren't used.
+  const response = await anthropicClient().beta.messages.create({
+    model,
+    max_tokens: opts.maxOutputTokens ?? 16000,
+    ...(opts.system ? { system: opts.system } : {}),
+    messages: [{ role: "user", content }],
+    output_config: {
+      effort: aiConfig.anthropicEffort,
+      ...(opts.schema ? { format: { type: "json_schema" as const, schema: closeObjects(opts.schema) as Record<string, unknown> } } : {}),
+    },
+    // If Claude's safety checks decline a request, another Claude model answers instead.
+    ...(/^claude-(opus-5|fable-5|sonnet-5-5)/.test(model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as never } : {}),
+  });
+  if (response.stop_reason === "refusal") throw new AIError("Claude declined this request. Try rephrasing it.", "bad_output");
+  const text = response.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("");
+  if (!text) throw new AIError("The AI returned an empty answer. Please try again.", "bad_output");
+  return text;
 }
 
-async function tryModel(model: string, prompt: string, opts: GenerateOptions, retries: number): Promise<string> {
+async function callOpenAI(prompt: string, opts: GenerateOptions, model: string): Promise<string> {
+  const parts: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [
+    ...filesOf(opts).map((f) =>
+      f.mimeType === "application/pdf"
+        ? ({ type: "file", file: { filename: "file.pdf", file_data: `data:application/pdf;base64,${f.data}` } } as const)
+        : ({ type: "image_url", image_url: { url: `data:${f.mimeType};base64,${f.data}` } } as const),
+    ),
+    { type: "text", text: prompt },
+  ];
+  const response = await openaiClient().chat.completions.create({
+    model,
+    messages: [...(opts.system ? [{ role: "system" as const, content: opts.system }] : []), { role: "user", content: parts }],
+    ...(opts.maxOutputTokens ? { max_completion_tokens: opts.maxOutputTokens } : {}),
+    ...(opts.schema ? { response_format: { type: "json_schema" as const, json_schema: { name: "output", schema: closeObjects(opts.schema) as Record<string, unknown>, strict: false } } } : {}),
+  });
+  const text = response.choices[0]?.message?.content;
+  if (!text) throw new AIError("The AI returned an empty answer. Please try again.", "bad_output");
+  return text;
+}
+
+function callModel(prompt: string, opts: GenerateOptions, provider: Provider, model: string): Promise<string> {
+  if (provider === "anthropic") return callClaude(prompt, opts, model);
+  if (provider === "openai") return callOpenAI(prompt, opts, model);
+  return callGemini(prompt, opts, model);
+}
+
+// HTTP status of a provider error (any of the three SDKs).
+const statusOf = (err: unknown) =>
+  err instanceof ApiError || err instanceof Anthropic.APIError || err instanceof OpenAI.APIError ? Number((err as { status?: number }).status) : undefined;
+
+function isRetryable(err: unknown) {
+  const status = statusOf(err);
+  return status === 429 || status === 500 || status === 503 || status === 529 || (err instanceof Anthropic.APIConnectionError || err instanceof OpenAI.APIConnectionError);
+}
+
+async function tryModel(choice: ModelChoice, model: string, prompt: string, opts: GenerateOptions, retries: number): Promise<string> {
   for (let attempt = 0; ; attempt++) {
     try {
-      return await callModel(prompt, opts, model);
+      return await callModel(prompt, opts, choice.provider, model);
     } catch (err) {
       if (err instanceof AIError || !isRetryable(err) || attempt >= retries) throw err;
       await new Promise((r) => setTimeout(r, aiConfig.retryBaseDelayMs * 2 ** attempt));
@@ -78,35 +164,39 @@ async function tryModel(model: string, prompt: string, opts: GenerateOptions, re
 
 // Tries the main model (with retries), then the backup model, then explains what went wrong.
 async function callWithRetry(prompt: string, opts: GenerateOptions): Promise<string> {
+  const choice = opts.purpose === "ally" ? aiConfig.ally : aiConfig;
   let err: unknown;
   try {
-    return await tryModel(aiConfig.model, prompt, opts, aiConfig.maxRetries);
+    return await tryModel(choice, choice.model, prompt, opts, aiConfig.maxRetries);
   } catch (e) {
     err = e;
   }
-  if (isRetryable(err) && aiConfig.fallbackModel && aiConfig.fallbackModel !== aiConfig.model) {
+  if (isRetryable(err) && choice.fallbackModel && choice.fallbackModel !== choice.model) {
     try {
-      return await tryModel(aiConfig.fallbackModel, prompt, opts, 1);
+      return await tryModel(choice, choice.fallbackModel, prompt, opts, 1);
     } catch (e) {
       err = e;
     }
   }
   if (err instanceof AIError) throw err;
-  if (err instanceof ApiError && err.status === 429) {
+  const status = statusOf(err);
+  if (status === 429) {
     throw new AIError(
-      "You've used today's free AI allowance for now (Google's limit). Everything done so far is saved — try again in a few minutes, or tomorrow if it keeps happening.",
+      `You've used your ${providerName[choice.provider]} AI allowance for now. Everything done so far is saved — try again in a few minutes, or tomorrow if it keeps happening.`,
       "rate_limit",
     );
   }
   if (isRetryable(err)) {
-    throw new AIError("Google's AI servers are overloaded at the moment (not a problem with your file). Everything done so far is saved — try again in a few minutes.", "busy");
+    throw new AIError(`${providerName[choice.provider]}'s AI servers are overloaded at the moment (not a problem with your file). Everything done so far is saved — try again in a few minutes.`, "busy");
   }
+  if (status === 401 || status === 403) throw new AIError(`The ${providerName[choice.provider]} API key was refused. Check ${keyFor[choice.provider]} in your environment.`, "not_configured");
+  console.error("AI call failed", err);
   throw new AIError("Something went wrong talking to the AI. Please try again.", "provider");
 }
 
 function cacheKey(prompt: string, opts: GenerateOptions) {
   return createHash("sha256")
-    .update(JSON.stringify([aiConfig.model, opts.system ?? "", opts.schema ?? null, prompt, opts.file?.data ?? "", (opts.files ?? []).map((f) => f.data)]))
+    .update(JSON.stringify([opts.purpose === "ally" ? `${aiConfig.ally.provider}:${aiConfig.ally.model}` : `${aiConfig.provider}:${aiConfig.model}`, opts.system ?? "", opts.schema ?? null, prompt, opts.file?.data ?? "", (opts.files ?? []).map((f) => f.data)]))
     .digest("hex");
 }
 
@@ -120,7 +210,7 @@ export async function generateText(prompt: string, opts: GenerateOptions = {}): 
   if (cached) return cached.output;
 
   const output = await callWithRetry(prompt, opts);
-  await supabase.from("ai_cache").upsert({ key, model: aiConfig.model, output });
+  await supabase.from("ai_cache").upsert({ key, model: opts.purpose === "ally" ? aiConfig.ally.model : aiConfig.model, output });
   return output;
 }
 
@@ -135,5 +225,10 @@ export async function generateJSON<T>(prompt: string, schema: unknown, opts: Omi
 }
 
 export function isAIConfigured() {
-  return Boolean(process.env.GEMINI_API_KEY);
+  return Boolean(process.env[keyFor[aiConfig.provider]]);
 }
+// e.g. "Gemini (gemini-flash-latest)", for showing which AI is in use.
+export const aiLabel = (purpose?: "ally") => {
+  const c = purpose === "ally" ? aiConfig.ally : aiConfig;
+  return `${providerName[c.provider]} (${c.model})`;
+};

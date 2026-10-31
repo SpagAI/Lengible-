@@ -367,6 +367,21 @@ export type DriveSource = {
   auto_import: boolean;
   last_checked_at: string | null;
   created_at: string;
+  // From 0008 (may be missing until that migration is run).
+  removed_at?: string | null;
+  folder_paths?: string[];
+  blocked_paths?: string[];
+};
+
+export type AllyChat = {
+  id: string;
+  user_id: string;
+  title: string;
+  scope: { courseId?: string | null; folderId?: string | null; fileId?: string | null };
+  scope_label: string | null;
+  messages: unknown[];
+  created_at: string;
+  updated_at: string;
 };
 
 export type DriveItemStatus = "new" | "imported" | "changed" | "skipped" | "error" | "removed";
@@ -403,6 +418,7 @@ export type Database = {
       lecturers: Table<Lecturer, "id" | "user_id" | "notes" | "created_at">;
       topics: Table<Topic, "id" | "user_id" | "parent_id" | "sort_order" | "block_id" | "session_type" | "lecturer_id" | "source" | "created_at">;
       drive_sources: Table<DriveSource, "id" | "user_id" | "resource_key" | "is_folder" | "auto_import" | "last_checked_at" | "created_at">;
+      ally_chats: Table<AllyChat, "id" | "user_id" | "title" | "scope" | "scope_label" | "messages" | "created_at" | "updated_at">;
       drive_items: Table<
         DriveItem,
         "id" | "user_id" | "resource_key" | "path" | "size_bytes" | "modified_time" | "md5" | "course_id" | "doc_type" | "include" | "status" | "error" | "file_id" | "imported_modified" | "claimed_at" | "created_at"

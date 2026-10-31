@@ -1,18 +1,19 @@
 "use client";
 
-import { Fragment, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowUp, BookOpen, FileText, ListChecks, Loader2, Sparkles, X } from "lucide-react";
+import { ArrowUp, BookOpen, ExternalLink, FileText, ListChecks, Loader2, Sparkles, X } from "lucide-react";
 import type { AskResult, AskScope } from "@/lib/ask";
 import type { QuizSettings } from "@/lib/supabase/types";
 import { startQuiz } from "@/app/(app)/quiz/actions";
+import { saveAllyChat } from "@/app/(app)/ally/actions";
 import { Button, Card, cx } from "@/components/ui";
 import { InfoTip } from "@/components/info-tip";
 
-type Turn = { q: string; result?: AskResult; error?: string };
+export type Turn = { q: string; result?: AskResult; error?: string };
 
-const EXAMPLES = [
+export const EXAMPLES = [
   "Explain the mechanism of action of warfarin from my slides",
   "Which slides cover haemolytic anaemia?",
   "Compare first-line TB drugs and their side effects",
@@ -42,7 +43,7 @@ function inline(text: string, onCite: (n: number) => void, key: string) {
 }
 
 // Paragraphs and "- " bullet lists.
-function AnswerText({ text, onCite }: { text: string; onCite: (n: number) => void }) {
+export function AnswerText({ text, onCite }: { text: string; onCite: (n: number) => void }) {
   const blocks: ReactNode[] = [];
   let bullets: string[] = [];
   const flush = () => {
@@ -76,7 +77,7 @@ function AnswerText({ text, onCite }: { text: string; onCite: (n: number) => voi
   return <div className="space-y-2 text-sm leading-relaxed">{blocks}</div>;
 }
 
-function Answer({ turn, onAsk }: { turn: Turn; onAsk: (q: string) => void }) {
+export function Answer({ turn, onPick }: { turn: Turn; onPick: (q: string) => void }) {
   const router = useRouter();
   const r = turn.result!;
   const [open, setOpen] = useState<number | null>(null);
@@ -163,7 +164,8 @@ function Answer({ turn, onAsk }: { turn: Turn; onAsk: (q: string) => void }) {
       {r.follow_ups.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {r.follow_ups.map((f) => (
-            <button key={f} type="button" onClick={() => onAsk(f)} className="rounded-full border border-border px-3 py-1 text-left text-xs text-muted hover:bg-surface-2">
+            <button key={f} type="button" onClick={() => onPick(f)}
+              title="Puts it in the box; edit it or press send" className="rounded-full border border-border px-3 py-1 text-left text-xs text-muted hover:bg-surface-2">
               {f}
             </button>
           ))}
@@ -173,92 +175,80 @@ function Answer({ turn, onAsk }: { turn: Turn; onAsk: (q: string) => void }) {
   );
 }
 
-// Ask AI about your materials, within a course, folder or file (or everything).
-export function AskPanel({
-  scope,
-  scopeLabel,
-  scopes,
-  compact,
-}: {
-  scope?: AskScope;
-  scopeLabel?: string;
-  // Choices for "Search in" (e.g. your courses), when no fixed scope is given.
-  scopes?: { label: string; scope: AskScope }[];
-  compact?: boolean;
-}) {
-  const [turns, setTurns] = useState<Turn[]>([]);
-  const [text, setText] = useState("");
+// One Ally conversation: asks with the last answers as context and saves the chat after every answer.
+export function useAllyChat({ scope, scopeLabel, initial }: { scope: AskScope; scopeLabel: string; initial?: { id: string; turns: Turn[] } }) {
+  const [turns, setTurns] = useState<Turn[]>(initial?.turns ?? []);
+  const [chatId, setChatId] = useState<string | null>(initial?.id ?? null);
   const [busy, setBusy] = useState(false);
-  const [pick, setPick] = useState(0);
-  const current = scope ?? scopes?.[pick]?.scope ?? {};
-  const label = scopeLabel ?? scopes?.[pick]?.label ?? "All your materials";
+  // Saved history needs migration 0008; without it chats still work, they just aren't kept.
+  const [notSaved, setNotSaved] = useState(false);
+  const idRef = useRef<string | null>(initial?.id ?? null);
 
-  const send = async (question: string) => {
-    const q = question.trim();
-    if (!q || busy) return;
+  const send = useCallback(
+    async (question: string) => {
+      const q = question.trim();
+      if (!q || busy) return;
+      setBusy(true);
+      const before = turns;
+      const history = before.filter((t) => t.result).map((t) => ({ q: t.q, a: t.result!.answer }));
+      setTurns([...before, { q }]);
+      let turn: Turn;
+      try {
+        const res = await fetch("/api/ask", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question: q, scope, history }) });
+        const body = await res.json();
+        turn = body.error ? { q, error: body.error } : { q, result: body as AskResult };
+      } catch {
+        turn = { q, error: "Couldn't reach Lengible. Check your connection and try again." };
+      }
+      const next = [...before, turn];
+      setTurns(next);
+      setBusy(false);
+      const saved = await saveAllyChat({ id: idRef.current, title: next[0].q, scope, scope_label: scopeLabel, messages: next }).catch(() => ({ error: "offline" }));
+      if ("id" in saved && saved.id) {
+        idRef.current = saved.id;
+        setChatId(saved.id);
+      } else setNotSaved(true);
+    },
+    [busy, turns, scope, scopeLabel],
+  );
+  const reset = useCallback(() => {
+    setTurns([]);
+    setChatId(null);
+    idRef.current = null;
+  }, []);
+  return { turns, send, busy, chatId, reset, notSaved };
+}
+
+// Ask Ally about your materials, within a course, folder or file (a compact panel on those pages).
+// The full chat, with your saved conversations, is on the Ask Ally page.
+export function AskPanel({ scope, scopeLabel }: { scope: AskScope; scopeLabel: string; compact?: boolean }) {
+  const { turns, send, busy, chatId, reset } = useAllyChat({ scope, scopeLabel });
+  const [text, setText] = useState("");
+  const input = useRef<HTMLTextAreaElement>(null);
+  const fill = (q: string) => {
+    setText(q);
+    input.current?.focus();
+  };
+  const submit = () => {
+    const q = text;
     setText("");
-    setBusy(true);
-    const history = turns.filter((t) => t.result).map((t) => ({ q: t.q, a: t.result!.answer }));
-    setTurns((t) => [...t, { q }]);
-    let turn: Turn;
-    try {
-      const res = await fetch("/api/ask", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question: q, scope: current, history }) });
-      const body = await res.json();
-      turn = body.error ? { q, error: body.error } : { q, result: body as AskResult };
-    } catch {
-      turn = { q, error: "Couldn't reach Lengible. Check your connection and try again." };
-    }
-    setTurns((t) => [...t.slice(0, -1), turn]);
-    setBusy(false);
+    void send(q);
   };
 
   return (
     <Card className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <Sparkles size={18} className="text-brand" />
-        <h2 className="font-semibold">Ask AI</h2>
-        <InfoTip label="Ask AI">
-          Ask in your own words. Lengible looks at how your files are grouped, searches the text of every processed slide (with synonyms and
-          drug/disease names), and answers from your slides with numbered sources you can open. Ask “which slides cover…”, or “quiz me on…” to
-          get a quiz from exactly those slides.
+        <AllyMark size={26} />
+        <h2 className="font-semibold">Ask Ally</h2>
+        <InfoTip label="Ask Ally">
+          Ally is Lengible&apos;s study assistant. Ask in your own words: Ally looks at how your files are grouped, searches the text of every
+          processed slide (with synonyms and drug/disease names), and answers from your slides with numbered sources you can open. Ask “which
+          slides cover…”, or “quiz me on…” to get a quiz from exactly those slides. Chats are saved on the Ask Ally page.
         </InfoTip>
-        <span className="ml-auto flex min-w-0 items-center gap-1.5 text-xs text-muted">
-          {scopes && !scope ? (
-            <>
-              Search in
-              <select
-                value={pick}
-                onChange={(e) => {
-                  setPick(Number(e.target.value));
-                  setTurns([]);
-                }}
-                className="min-h-8 rounded-lg border border-border bg-surface px-2 text-xs text-text"
-                aria-label="Search in"
-              >
-                {scopes.map((s, i) => (
-                  <option key={i} value={i}>
-                    {s.label}
-                  </option>
-                ))}
-              </select>
-            </>
-          ) : (
-            <span className="inline-flex min-w-0 items-center gap-1 truncate">
-              <FileText size={13} className="shrink-0" /> <span className="truncate">{label}</span>
-            </span>
-          )}
+        <span className="ml-auto inline-flex min-w-0 items-center gap-1 truncate text-xs text-muted">
+          <FileText size={13} className="shrink-0" /> <span className="truncate">{scopeLabel}</span>
         </span>
       </div>
-
-      {turns.length === 0 && !compact && (
-        <div className="flex flex-wrap gap-1.5">
-          {EXAMPLES.map((e) => (
-            <button key={e} type="button" onClick={() => send(e)} className="rounded-full border border-border px-3 py-1.5 text-left text-xs text-muted hover:bg-surface-2">
-              {e}
-            </button>
-          ))}
-        </div>
-      )}
 
       {turns.map((t, i) => (
         <div key={i} className="space-y-2 border-t border-border pt-3 first:border-0 first:pt-0">
@@ -266,12 +256,12 @@ export function AskPanel({
             <p className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-brand px-3 py-2 text-sm text-on-brand">{t.q}</p>
           </div>
           {t.result ? (
-            <Answer turn={t} onAsk={send} />
+            <Answer turn={t} onPick={fill} />
           ) : t.error ? (
             <p className="text-sm text-danger">{t.error}</p>
           ) : (
             <p className="flex items-center gap-2 text-sm text-muted">
-              <Loader2 size={16} className="animate-spin" /> Searching your slides…
+              <Loader2 size={16} className="animate-spin" /> Ally is searching your slides…
             </p>
           )}
         </div>
@@ -280,33 +270,55 @@ export function AskPanel({
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          void send(text);
+          submit();
         }}
-        className="flex items-end gap-2"
+        className="flex items-end gap-2 rounded-2xl border border-border bg-surface p-1.5 focus-within:border-brand"
       >
         <textarea
+          ref={input}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              void send(text);
+              submit();
             }
           }}
-          rows={compact ? 1 : 2}
-          placeholder={turns.length ? "Ask a follow-up…" : compact ? "Ask about these slides…" : "Ask anything about your slides, e.g. “side effects of aminoglycosides”"}
-          className="min-h-11 flex-1 resize-none rounded-xl border border-border bg-surface px-3 py-2.5 text-sm outline-none focus:border-brand"
+          rows={1}
+          placeholder={turns.length ? "Ask a follow-up…" : "Ask Ally about these slides…"}
+          className="max-h-40 min-h-9 flex-1 resize-none bg-transparent px-2 py-2 text-sm outline-none"
           aria-label="Your question"
         />
-        <Button type="submit" disabled={busy || !text.trim()} aria-label="Ask">
+        <button
+          type="submit"
+          disabled={busy || !text.trim()}
+          aria-label="Send"
+          className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand text-on-brand disabled:opacity-40"
+        >
           {busy ? <Loader2 size={16} className="animate-spin" /> : <ArrowUp size={16} />}
-        </Button>
-        {turns.length > 0 && (
-          <button type="button" onClick={() => setTurns([])} className="grid size-11 place-items-center rounded-xl text-muted hover:bg-surface-2" aria-label="Start over" title="Start over">
-            <X size={16} />
-          </button>
-        )}
+        </button>
       </form>
+      {turns.length > 0 && (
+        <div className="flex items-center gap-3 text-xs">
+          {chatId && (
+            <Link href={`/ally?chat=${chatId}`} className="inline-flex items-center gap-1 font-medium text-brand">
+              Continue in Ally <ExternalLink size={12} />
+            </Link>
+          )}
+          <button type="button" onClick={reset} className="inline-flex items-center gap-1 text-muted hover:text-text">
+            <X size={12} /> New question
+          </button>
+        </div>
+      )}
     </Card>
+  );
+}
+
+// Ally's mark: a small round badge with a sparkle.
+export function AllyMark({ size = 28 }: { size?: number }) {
+  return (
+    <span className="grid shrink-0 place-items-center rounded-full bg-gradient-to-br from-brand to-brand-strong text-on-brand shadow-sm" style={{ width: size, height: size }} aria-hidden>
+      <Sparkles size={Math.round(size * 0.55)} />
+    </span>
   );
 }

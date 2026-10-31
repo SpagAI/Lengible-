@@ -15,7 +15,7 @@ export const navItems: NavItem[] = [
   { href: "/", label: "Home", short: "Home", icon: Home, primary: true },
   { href: "/courses", label: "Courses", short: "Courses", icon: BookOpen, primary: true },
   { href: "/library", label: "Library", short: "Library", icon: FolderOpen, primary: true },
-  { href: "/ask", label: "Ask AI", short: "Ask AI", icon: Sparkles },
+  { href: "/ally", label: "Ask Ally", short: "Ally", icon: Sparkles },
   { href: "/quiz", label: "Quiz", short: "Quiz", icon: ListChecks, primary: true },
   { href: "/drugs", label: "Drugs", short: "Drugs", icon: Pill, primary: true },
   { href: "/flashcards", label: "Flashcards", short: "Cards", icon: Layers },

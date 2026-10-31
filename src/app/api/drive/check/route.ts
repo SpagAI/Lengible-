@@ -16,7 +16,9 @@ export async function GET(req: NextRequest) {
   const { data: sources, error } = await supabase.from("drive_sources").select("*");
   if (error || !sources?.length || !driveKey()) return NextResponse.json({ items: [], checked: 0 });
 
-  const due = (sources as DriveSource[]).filter((s) => force || !s.last_checked_at || Date.now() - new Date(s.last_checked_at).getTime() > 3600_000);
+  // Disconnected links aren't checked (their files stay in your Library).
+  const live = (sources as DriveSource[]).filter((s) => !s.removed_at);
+  const due = live.filter((s) => force || !s.last_checked_at || Date.now() - new Date(s.last_checked_at).getTime() > 3600_000);
   const summary = { checked: 0, added: 0, changed: 0, removed: 0, problems: [] as string[] };
   for (const s of due) {
     try {
@@ -29,7 +31,7 @@ export async function GET(req: NextRequest) {
       summary.problems.push(`${s.name}: ${e instanceof Error ? e.message : "couldn't check"}`);
     }
   }
-  const auto = new Set((sources as DriveSource[]).filter((s) => s.auto_import).map((s) => s.id));
+  const auto = new Set(live.filter((s) => s.auto_import).map((s) => s.id));
   const stale = new Date(Date.now() - 15 * 60_000).toISOString();
   const { data: items } = await supabase
     .from("drive_items")
@@ -38,32 +40,25 @@ export async function GET(req: NextRequest) {
     .in("status", ["new", "changed"])
     .or(`claimed_at.is.null,claimed_at.lt.${stale}`)
     .limit(200);
-  // Changed files you brought in before are always refreshed; new files only for links that bring them in by themselves.
-  const todo = (items ?? []).filter((i) => i.status === "changed" || auto.has(i.source_id));
-  // A new file lands in a folder whose files you've already processed: process it too.
-  // (Changed files are processed again only if you had processed them; the import works that out.)
-  const processedFolders = new Set<string>();
-  const fresh = todo.filter((i) => i.status === "new");
-  if (fresh.length) {
-    const { data: brought } = await supabase
-      .from("drive_items")
-      .select("source_id, path, file_id")
-      .in("source_id", [...new Set(fresh.map((i) => i.source_id))])
-      .eq("status", "imported")
-      .not("file_id", "is", null);
-    const ids = [...new Set((brought ?? []).map((b) => b.file_id!))];
-    const status = new Map<string, string>();
-    for (let k = 0; k < ids.length; k += 200) {
-      const { data } = await supabase.from("files").select("id, status").in("id", ids.slice(k, k + 200));
-      for (const f of data ?? []) status.set(f.id, f.status);
+  // Changed files you brought in before are always refreshed; new files only for links kept up to date.
+  // A new file comes in by itself only inside a folder you already brought in (ticking alone starts nothing).
+  const sourcesWithNew = [...new Set((items ?? []).filter((i) => i.status === "new").map((i) => i.source_id))];
+  const broughtIn = new Set<string>();
+  for (const id of sourcesWithNew) {
+    for (let from = 0; ; from += 1000) {
+      const { data } = await supabase.from("drive_items").select("path").eq("source_id", id).eq("status", "imported").range(from, from + 999);
+      for (const r of data ?? []) broughtIn.add(`${id}/${r.path}`);
+      if (!data || data.length < 1000) break;
     }
-    const byFolder = new Map<string, string[]>();
-    for (const b of brought ?? []) {
-      const key = `${b.source_id}/${b.path}`;
-      byFolder.set(key, [...(byFolder.get(key) ?? []), status.get(b.file_id!) ?? "uploaded"]);
-    }
-    for (const [key, list] of byFolder) if (list.every((st) => st !== "uploaded")) processedFolders.add(key);
   }
+  const inBroughtInFolder = (sourceId: string, path: string) => {
+    const parts = path.split("/").filter(Boolean);
+    for (let k = parts.length; k >= 0; k--) if (broughtIn.has(`${sourceId}/${parts.slice(0, k).join("/")}`)) return true;
+    return false;
+  };
+  const todo = (items ?? []).filter((i) =>
+    i.status === "changed" ? live.some((s) => s.id === i.source_id) : auto.has(i.source_id) && inBroughtInFolder(i.source_id, i.path),
+  );
   return NextResponse.json({
     ...summary,
     items: todo.map((i) => ({
@@ -71,7 +66,8 @@ export async function GET(req: NextRequest) {
       name: i.name,
       courseId: i.course_id,
       changed: i.status === "changed",
-      process: i.status === "new" && processedFolders.has(`${i.source_id}/${i.path}`),
+      // Everything brought in is processed too (changed files are always read again).
+      process: true,
     })),
   });
 }

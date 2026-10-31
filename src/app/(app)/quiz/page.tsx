@@ -5,11 +5,10 @@ import { requireUser } from "@/lib/supabase/server";
 import { getTodayQuiz } from "@/lib/quiz";
 import { getStreak } from "@/lib/progress";
 import { getCourses, leafCourses } from "@/lib/courses";
-import { isAIConfigured } from "@/lib/ai";
+import { aiLabel, isAIConfigured } from "@/lib/ai";
 import { isMissingTable } from "@/lib/drugs";
 import { FORMATS, topicStats } from "@/lib/quiz-engine";
 import { DRUG_QUIZ_TYPES } from "@/lib/drug-quiz";
-import { aiConfig } from "@/config/ai";
 import { formatDate } from "@/lib/dates";
 import { deleteQuizSession } from "./actions";
 import { PageHeader, Card, EmptyState, cx } from "@/components/ui";
@@ -102,7 +101,7 @@ async function TodayTab({ supabase, streak, names }: { supabase: DB; streak: Awa
         </Card>
       )}
       <p className="mt-6 text-xs text-muted">
-        Questions are written by Google Gemini (model: {aiConfig.model}) from your uploads first, then standard textbooks. Best streak: {streak.best} days. For
+        Questions are written by {aiLabel()} from your uploads first, then standard textbooks. Best streak: {streak.best} days. For
         other formats, difficulty and topics, use <Link href="/quiz?tab=build" className="text-brand underline">Build a quiz</Link>.
       </p>
     </>

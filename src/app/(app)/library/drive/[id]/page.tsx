@@ -4,8 +4,8 @@ import { notFound } from "next/navigation";
 import { ChevronLeft, ExternalLink } from "lucide-react";
 import { requireUser } from "@/lib/supabase/server";
 import { getCourses, leafCourses } from "@/lib/courses";
-import { removeDriveLink } from "../actions";
-import { PageHeader } from "@/components/ui";
+import { reconnectDriveLink, removeDriveLink } from "../actions";
+import { Button, PageHeader } from "@/components/ui";
 import { ConfirmButton } from "@/components/confirm-button";
 import { DriveTree } from "@/components/drive/drive-tree";
 import { allDriveItems, blockedNote } from "@/lib/drive";
@@ -52,6 +52,13 @@ export default async function DriveSourcePage({ params, searchParams }: PageProp
           {blockedNote(blocked)} Ask your class rep to share them, or add them as their own links if they have their own shared link.
         </p>
       )}
+      {source.removed_at && (
+        <form action={reconnectDriveLink} className="mb-4 flex flex-wrap items-center gap-3 rounded-xl bg-warn/10 p-3 text-sm">
+          <input type="hidden" name="id" value={id} />
+          <span className="min-w-0 flex-1">This link is disconnected. Everything you brought in still works; reconnect to pick up changes from Drive.</span>
+          <Button type="submit">Reconnect</Button>
+        </form>
+      )}
       <DriveTree
         sourceId={id}
         items={items}
@@ -60,13 +67,16 @@ export default async function DriveSourcePage({ params, searchParams }: PageProp
         linkedAt={source.created_at}
         lastChecked={source.last_checked_at}
         fileStatus={fileStatus}
+        folderPaths={source.folder_paths ?? []}
       />
-      <form action={removeDriveLink} className="mt-6">
-        <input type="hidden" name="id" value={id} />
-        <ConfirmButton variant="danger" message="Remove this link? Files already brought in stay in your Library.">
-          Remove this link
-        </ConfirmButton>
-      </form>
+      {!source.removed_at && (
+        <form action={removeDriveLink} className="mt-6">
+          <input type="hidden" name="id" value={id} />
+          <ConfirmButton variant="danger" message="Disconnect this link? Everything brought in stays in your Library, and you can reconnect any time from Drive links.">
+            Disconnect this link
+          </ConfirmButton>
+        </form>
+      )}
     </>
   );
 }

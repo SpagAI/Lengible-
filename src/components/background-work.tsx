@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import { BookOpenText, ChevronDown, ChevronRight, Loader2, Pause, Play, Upload } from "lucide-react";
 import { useSupabase } from "@/lib/supabase/client";
 import { createFileRecord } from "@/app/(app)/library/actions";
-import { runDrivePipeline, runPipeline, type Progress } from "@/components/library/pipeline";
+import { progressPercent, runDrivePipeline, runPipeline, type Progress } from "@/components/library/pipeline";
+import { ProgressPct } from "@/components/progress-pct";
 import { StageIcon } from "@/components/library/upload-panel";
 import { ProcessDetails } from "@/components/process-details";
 import { postJSON } from "@/lib/fetch-json";
@@ -439,7 +440,11 @@ function Dock({ jobs, reading, onClear }: { jobs: UploadJob[]; reading: ReturnTy
     <div className={cx(position, "w-[min(92vw,380px)] overflow-hidden rounded-2xl border border-border bg-surface/95 text-xs shadow-lg backdrop-blur")}>
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
         {working ? <Loader2 size={14} className="animate-spin text-brand" /> : <BookOpenText size={14} className="text-brand" />}
-        <span className="flex-1 font-semibold">{active.length ? `Uploading ${active.length} file${active.length > 1 ? "s" : ""}` : "Background reading"}</span>
+        <span className="flex-1 font-semibold">{active.length ? `Processing ${active.length} file${active.length > 1 ? "s" : ""}` : jobs.length ? "Finished" : "Background reading"}</span>
+        {jobs.length > 0 && (
+          // All tasks together: each file counts equally.
+          <ProgressPct pct={jobs.reduce((t, j) => t + progressPercent(j.progress), 0) / jobs.length} label="All files" />
+        )}
         <span className="hidden text-muted sm:inline">keeps going while you browse</span>
         <button type="button" onClick={() => minimise(true)} className="grid size-7 place-items-center rounded-lg text-muted hover:bg-surface-2" aria-label="Minimise">
           <ChevronDown size={16} />
@@ -460,6 +465,7 @@ function Dock({ jobs, reading, onClear }: { jobs: UploadJob[]; reading: ReturnTy
                   {j.progress.step === "pictures" && j.progress.total ? ` · picture ${j.progress.done ?? 0} of ${j.progress.total}` : ""}
                 </span>
               </span>
+              <ProgressPct pct={progressPercent(j.progress)} failed={j.progress.stage === "error"} className="mt-0.5" />
               {shown === j.key ? <ChevronDown size={16} className="mt-0.5 shrink-0 text-muted" /> : <ChevronRight size={16} className="mt-0.5 shrink-0 text-muted" />}
             </button>
             {shown === j.key && (

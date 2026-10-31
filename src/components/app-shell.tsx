@@ -8,6 +8,7 @@ import { cx } from "@/components/ui";
 import { SignOutButton } from "@/components/sign-out-button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { setSidebarCollapsed } from "@/components/theme";
+import { BackButton } from "@/components/back-button";
 
 function isActive(pathname: string, href: string) {
   return href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/");
@@ -42,6 +43,7 @@ export function AppShell({ children, email }: { children: React.ReactNode; email
   const pathname = usePathname();
   const primary = navItems.filter((i) => i.primary);
   const moreActive = pathname.startsWith("/more") || navItems.some((i) => !i.primary && !i.disabled && isActive(pathname, i.href));
+  const fullBleed = pathname === "/ally" || pathname.startsWith("/ally/");
   const toggle = () => setSidebarCollapsed(document.documentElement.dataset.sidebar !== "collapsed");
 
   return (
@@ -51,7 +53,7 @@ export function AppShell({ children, email }: { children: React.ReactNode; email
         <div className="mb-4 flex items-center gap-2 px-1.5 py-1">
           <Link href="/" title="Lengible" className="flex min-w-0 items-center gap-2.5">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/logo.svg" alt="Lengible" width={36} height={36} className="shrink-0 rounded-xl ring-1 ring-white/20" />
+            <img src="/logo-mark.png" alt="Lengible" width={36} height={36} className="shrink-0" />
             <span className="sidebar-label text-lg font-semibold tracking-tight">Lengible</span>
           </Link>
         </div>
@@ -82,11 +84,19 @@ export function AppShell({ children, email }: { children: React.ReactNode; email
         {/* Phone header with the logo. */}
         <header className="flex items-center gap-2 bg-gradient-to-r from-nav to-nav-2 px-4 py-3 text-white md:hidden">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo.svg" alt="" width={30} height={30} className="rounded-lg ring-1 ring-white/20" />
+          <img src="/logo-mark.png" alt="" width={30} height={30} />
           <span className="flex-1 text-lg font-semibold tracking-tight">Lengible</span>
           <ThemeToggle compact className="text-nav-text" />
         </header>
-        <main className="mx-auto w-full max-w-5xl flex-1 px-4 pt-5 pb-28 md:px-8 md:pt-8 md:pb-10">{children}</main>
+        {fullBleed ? (
+          // Ask Ally fills the screen like a chat app.
+          <main className="flex min-h-0 w-full flex-1 flex-col pb-[calc(64px+env(safe-area-inset-bottom,0px))] md:p-4">{children}</main>
+        ) : (
+          <main className="mx-auto w-full max-w-5xl flex-1 px-4 pt-3 pb-28 md:px-8 md:pt-5 md:pb-10">
+            <BackButton className="-ml-2 mb-1" />
+            {children}
+          </main>
+        )}
       </div>
 
       {/* Phone bottom bar */}

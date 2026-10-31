@@ -155,6 +155,8 @@ export async function listFolder(id: string, resourceKey: string | null) {
   const keyOf = new Map<string, string>(resourceKey ? [[id, resourceKey]] : []);
   let level = [{ id, path: "" }];
   let folders = 0;
+  // Every subfolder's path, empty ones included (for exact counts).
+  const paths: string[] = [];
   let truncated = false;
   // Subfolders that aren't shared "Anyone with the link": skipped (and named) instead of failing the whole link.
   const blocked: string[] = [];
@@ -223,6 +225,7 @@ export async function listFolder(id: string, resourceKey: string | null) {
   };
   for (let depth = 0; level.length && depth <= MAX_DEPTH; depth++) {
     folders += level.length;
+    for (const f of level) if (f.path) paths.push(f.path);
     const batches: { id: string; path: string }[][] = [];
     for (let k = 0; k < level.length; k += BATCH) batches.push(level.slice(k, k + BATCH));
     const next: { id: string; path: string }[] = [];
@@ -248,7 +251,7 @@ export async function listFolder(id: string, resourceKey: string | null) {
   }
   // Same order as Drive shows: by folder, then name.
   out.sort((a, b) => a.path.localeCompare(b.path) || a.name.localeCompare(b.name));
-  return { files: out, folders, truncated, blocked: blocked.sort() };
+  return { files: out, folders, paths: paths.sort(), truncated, blocked: blocked.sort() };
 }
 
 // PowerPoint and Word files (and anything over the 50 MB storage limit) aren't copied into your storage:
@@ -296,9 +299,10 @@ export async function allDriveItems(supabase: DB, sourceId: string) {
 export async function syncItems(supabase: DB, source: DriveSource) {
   let files: ListedFile[];
   let folders = 0;
+  let paths: string[] = [];
   let truncated = false;
   let blocked: string[] = [];
-  if (source.is_folder) ({ files, folders, truncated, blocked } = await listFolder(source.drive_id, source.resource_key));
+  if (source.is_folder) ({ files, folders, paths, truncated, blocked } = await listFolder(source.drive_id, source.resource_key));
   else {
     const m = await getMeta(source.drive_id, source.resource_key);
     files = [{ id: m.id, resourceKey: m.resourceKey ?? source.resource_key, name: m.name, mime: m.mimeType, path: "", size: m.size ? Number(m.size) : null, modified: m.modifiedTime ?? null, md5: m.md5Checksum ?? null }];
@@ -384,6 +388,9 @@ export async function syncItems(supabase: DB, source: DriveSource) {
   // (Nor are files inside folders Google wouldn't open this time.)
   const gone = truncated ? [] : [...have.values()].filter((i) => !seen.has(i.drive_id) && i.status !== "removed" && !blocked.some((b) => i.path === b || i.path.startsWith(`${b}/`)));
   if (gone.length) await supabase.from("drive_items").update({ status: "removed" }).in("id", gone.map((i) => i.id));
-  await supabase.from("drive_sources").update({ last_checked_at: new Date().toISOString() }).eq("id", source.id);
+  const checked = new Date().toISOString();
+  // Folder list for exact counts (needs migration 0008; without it, just the check time).
+  const { error: savePaths } = await supabase.from("drive_sources").update({ last_checked_at: checked, folder_paths: paths, blocked_paths: blocked }).eq("id", source.id);
+  if (savePaths) await supabase.from("drive_sources").update({ last_checked_at: checked }).eq("id", source.id);
   return { added: fresh.filter((f) => f.status === "new").length, changed, removed: gone.length, total: files.length, folders, truncated, blocked };
 }

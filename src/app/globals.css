@@ -20,23 +20,23 @@
   --ok: #157f3c;
 }
 
-/* Dark mode: follows the device unless you pick Light or Dark in the app. */
+/* Dark mode (shades of black, blue accents): follows the device unless you pick Light or Dark in the app. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --bg: #08101f;
-    --surface: #0f1a30;
-    --surface-2: #15233f;
-    --border: #22345a;
-    --text: #e5ebfa;
-    --muted: #93a2c3;
-    --brand: #5b8cff;
-    --brand-strong: #8db0ff;
-    --brand-soft: #182d61;
-    --on-brand: #061230;
-    --nav: #0b1733;
-    --nav-2: #091228;
-    --nav-text: #c3d2f7;
+    --bg: #0a0a0a;
+    --surface: #141414;
+    --surface-2: #1e1e1e;
+    --border: #2c2c2c;
+    --text: #ededed;
+    --muted: #a1a1a1;
+    --brand: #6b96ff;
+    --brand-strong: #9db9ff;
+    --brand-soft: #1a2440;
+    --on-brand: #050505;
+    --nav: #000000;
+    --nav-2: #0e0e0e;
+    --nav-text: #d6d6d6;
     --danger: #ff7a7f;
     --warn: #ffb547;
     --ok: #4ad583;
@@ -44,19 +44,19 @@
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #08101f;
-  --surface: #0f1a30;
-  --surface-2: #15233f;
-  --border: #22345a;
-  --text: #e5ebfa;
-  --muted: #93a2c3;
-  --brand: #5b8cff;
-  --brand-strong: #8db0ff;
-  --brand-soft: #182d61;
-  --on-brand: #061230;
-  --nav: #0b1733;
-  --nav-2: #091228;
-  --nav-text: #c3d2f7;
+  --bg: #0a0a0a;
+  --surface: #141414;
+  --surface-2: #1e1e1e;
+  --border: #2c2c2c;
+  --text: #ededed;
+  --muted: #a1a1a1;
+  --brand: #6b96ff;
+  --brand-strong: #9db9ff;
+  --brand-soft: #1a2440;
+  --on-brand: #050505;
+  --nav: #000000;
+  --nav-2: #0e0e0e;
+  --nav-text: #d6d6d6;
   --danger: #ff7a7f;
   --warn: #ffb547;
   --ok: #4ad583;

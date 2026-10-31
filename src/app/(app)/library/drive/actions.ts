@@ -23,7 +23,11 @@ export async function addDriveLink(_prev: { error?: string } | undefined, fd: Fo
     const isFolder = meta.mimeType === "application/vnd.google-apps.folder";
     const { data: existing, error: readError } = await supabase.from("drive_sources").select("id").eq("drive_id", parsed.id).maybeSingle();
     if (readError) throw readError;
-    if (existing) sourceId = existing.id;
+    if (existing) {
+      // The same link again (e.g. after disconnecting): reconnect it, keeping everything already brought in.
+      sourceId = existing.id;
+      await supabase.from("drive_sources").update({ removed_at: null, link }).eq("id", sourceId);
+    }
     else {
       const { data, error } = await supabase
         .from("drive_sources")
@@ -91,9 +95,32 @@ export async function setAutoImport(id: string, on: boolean) {
   revalidatePath(`/library/drive/${id}`);
 }
 
+// Disconnecting keeps the link's history and everything brought in (files, text, topics), so reconnecting
+// later is instant: nothing is downloaded or processed again unless it changed in Drive.
 export async function removeDriveLink(fd: FormData) {
   const { supabase } = await requireUser();
-  // Files already brought in stay in your Library.
+  const id = String(fd.get("id"));
+  const { error } = await supabase.from("drive_sources").update({ removed_at: new Date().toISOString() }).eq("id", id);
+  // Before migration 0008 there's no "disconnected" state: remove the link (files stay in your Library).
+  if (error) await supabase.from("drive_sources").delete().eq("id", id);
+  revalidatePath("/library", "layout");
+  redirect("/library/drive");
+}
+
+export async function reconnectDriveLink(fd: FormData) {
+  const { supabase } = await requireUser();
+  const id = String(fd.get("id"));
+  await supabase.from("drive_sources").update({ removed_at: null }).eq("id", id);
+  const { data: source } = await supabase.from("drive_sources").select("*").eq("id", id).maybeSingle();
+  // Look at Drive again; if it can't be reached right now, your saved files still work.
+  if (source) await syncItems(supabase, source as DriveSource).catch(() => {});
+  revalidatePath("/library", "layout");
+  redirect(`/library/drive/${id}`);
+}
+
+// Removes a disconnected link and its history for good (files already in your Library stay).
+export async function deleteDriveLink(fd: FormData) {
+  const { supabase } = await requireUser();
   await supabase.from("drive_sources").delete().eq("id", String(fd.get("id")));
   revalidatePath("/library", "layout");
   redirect("/library/drive");

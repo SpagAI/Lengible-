@@ -206,7 +206,7 @@ export default async function CoursePage({ params }: PageProps<"/courses/[id]">)
                 })}
               </ul>
             </div>
-            <p className="text-xs text-muted">Open a folder or file to quiz on exactly it, or ask the AI (e.g. “quiz me on the anticoagulant slides”).</p>
+            <p className="text-xs text-muted">Open a folder or file to quiz on exactly it, or ask Ally (e.g. “quiz me on the anticoagulant slides”).</p>
           </Card>
           <AskPanel scope={{ courseId: course.id }} scopeLabel={course.name} compact />
         </section>

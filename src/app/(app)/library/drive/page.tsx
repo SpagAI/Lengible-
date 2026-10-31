@@ -1,10 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ChevronLeft, ChevronRight, FolderOpen } from "lucide-react";
+import { ChevronLeft, ChevronRight, FolderOpen, PlugZap, Unplug } from "lucide-react";
 import { requireUser } from "@/lib/supabase/server";
 import { isMissingTable } from "@/lib/drugs";
 import { formatDate } from "@/lib/dates";
-import { PageHeader, Card } from "@/components/ui";
+import { PageHeader, Card, Button } from "@/components/ui";
+import { ConfirmButton } from "@/components/confirm-button";
+import { deleteDriveLink, reconnectDriveLink } from "./actions";
 import { AddLinkForm } from "@/components/drive/add-link-form";
 import { DriveSetup } from "@/components/drive/drive-setup";
 import type { DriveSource } from "@/lib/supabase/types";
@@ -29,6 +31,8 @@ export default async function DrivePage() {
     }),
   );
   const countOf = new Map(counts);
+  const live = ((sources ?? []) as DriveSource[]).filter((s) => !s.removed_at);
+  const disconnected = ((sources ?? []) as DriveSource[]).filter((s) => s.removed_at);
   const hasKey = !!(process.env.GOOGLE_DRIVE_API_KEY || process.env.GOOGLE_API_KEY);
 
   return (
@@ -52,9 +56,9 @@ export default async function DrivePage() {
             <h2 className="mb-3 font-semibold">Add a shared link</h2>
             <AddLinkForm />
           </Card>
-          {((sources ?? []) as DriveSource[]).length > 0 && (
+          {live.length > 0 && (
             <Card className="divide-y divide-border p-0">
-              {((sources ?? []) as DriveSource[]).map((s) => {
+              {live.map((s) => {
                 const { total, inLib, waiting } = countOf.get(s.id) ?? { total: 0, inLib: 0, waiting: 0 };
                 return (
                   <Link key={s.id} href={`/library/drive/${s.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-surface-2">
@@ -62,7 +66,7 @@ export default async function DrivePage() {
                     <span className="min-w-0 flex-1">
                       <span className="block truncate font-medium">{s.name}</span>
                       <span className="block text-xs text-muted">
-                        {total.toLocaleString()} files · {inLib} in your Library{waiting ? ` · ${waiting} to bring in` : ""}
+                        {total.toLocaleString()} files · {inLib} in your Library{waiting ? ` · ${waiting} ticked, not brought in yet` : ""}
                         {s.last_checked_at ? ` · checked ${formatDate(s.last_checked_at.slice(0, 10), { day: "numeric", month: "short" })}` : ""}
                       </span>
                     </span>
@@ -70,6 +74,43 @@ export default async function DrivePage() {
                   </Link>
                 );
               })}
+            </Card>
+          )}
+          {disconnected.length > 0 && (
+            <Card className="space-y-2">
+              <h2 className="font-semibold">Disconnected links</h2>
+              <p className="text-xs text-muted">
+                Everything you brought in from these is still in your Library and works as before. Reconnect to pick up changes from Drive again;
+                nothing is downloaded or processed twice.
+              </p>
+              <ul className="divide-y divide-border">
+                {disconnected.map((s) => {
+                  const { total, inLib } = countOf.get(s.id) ?? { total: 0, inLib: 0, waiting: 0 };
+                  return (
+                    <li key={s.id} className="flex flex-wrap items-center gap-2 py-2">
+                      <Unplug size={18} className="shrink-0 text-muted" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium">{s.name}</span>
+                        <span className="block text-xs text-muted">
+                          {inLib} of {total.toLocaleString()} files in your Library · disconnected {formatDate(s.removed_at!.slice(0, 10), { day: "numeric", month: "short" })}
+                        </span>
+                      </span>
+                      <form action={reconnectDriveLink}>
+                        <input type="hidden" name="id" value={s.id} />
+                        <Button type="submit">
+                          <PlugZap size={16} /> Reconnect
+                        </Button>
+                      </form>
+                      <form action={deleteDriveLink}>
+                        <input type="hidden" name="id" value={s.id} />
+                        <ConfirmButton variant="ghost" message="Forget this link and its history? Files already in your Library stay.">
+                          Forget
+                        </ConfirmButton>
+                      </form>
+                    </li>
+                  );
+                })}
+              </ul>
             </Card>
           )}
         </div>

@@ -3,11 +3,13 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Download, FileText, Folder, Loader2, Play, RefreshCw, Sparkles } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight, CircleAlert, FileText, Folder, Loader2, Play, RefreshCw, Sparkles } from "lucide-react";
 import type { DriveItem } from "@/lib/supabase/types";
 import { checkDriveLink, setAutoImport, setFolderCourse, setFolderInclude, updateDriveItem } from "@/app/(app)/library/drive/actions";
 import { useBackgroundWork } from "@/components/background-work";
 import { InfoTip } from "@/components/info-tip";
+import { ProgressPct } from "@/components/progress-pct";
+import { progressPercent } from "@/components/library/pipeline";
 import { docTypes, formatBytes } from "@/lib/library";
 import { whenLabel } from "@/lib/dates";
 import { Button, Card, cx, inputClass } from "@/components/ui";
@@ -33,6 +35,7 @@ export function DriveTree({
   fileStatus,
   linkedAt,
   lastChecked,
+  folderPaths = [],
 }: {
   sourceId: string;
   items: DriveItem[];
@@ -41,6 +44,8 @@ export function DriveTree({
   fileStatus: Record<string, string>;
   linkedAt: string;
   lastChecked: string | null;
+  // Every folder in the link, empty ones too (saved when Drive is checked), for exact counts.
+  folderPaths?: string[];
 }) {
   const router = useRouter();
   const { addDriveImports, addProcessJobs, jobs } = useBackgroundWork();
@@ -129,6 +134,47 @@ export function DriveTree({
     });
   };
 
+  // How far each file is (0–100): processed = 100 (green), not processed or failed = 0 (red), live while it runs.
+  const jobFor = new Map<string, (typeof jobs)[number]>();
+  for (const j of jobs) for (const k of [j.driveItemId, j.processFileId, j.id]) if (k) jobFor.set(k, j);
+  const DONE = ["analysed", "extracted", "no_text"];
+  const progressOf = (i: DriveItem): { pct: number; failed: boolean } | null => {
+    const job = jobFor.get(i.id) ?? (i.file_id ? jobFor.get(i.file_id) : undefined);
+    if (job && job.progress.stage !== "error") return { pct: progressPercent(job.progress), failed: false };
+    if (i.status === "skipped") return null;
+    if (i.status === "removed" && !i.file_id) return null;
+    const fs = i.file_id ? fileStatus[i.file_id] : undefined;
+    if (i.file_id && fs && DONE.includes(fs) && i.status !== "changed") return { pct: 100, failed: false };
+    return { pct: 0, failed: !!job || i.status === "error" || fs === "failed" };
+  };
+  const inside = (i: DriveItem, path: string) => !path || i.path === path || i.path.startsWith(`${path}/`);
+  // A folder's progress is the average of its files' (subfolders included).
+  const folderProgress = (path: string) => {
+    const list = items.map((i) => (inside(i, path) ? progressOf(i) : null)).filter((x): x is { pct: number; failed: boolean } => !!x);
+    return list.length ? Math.round(list.reduce((t, x) => t + x.pct, 0) / list.length) : null;
+  };
+  // Exact counts: subfolders and files directly inside a folder, and all files inside it (deleted-in-Drive files left out).
+  const allPaths = new Set<string>(folderPaths);
+  for (const i of items) {
+    const parts = i.path.split("/").filter(Boolean);
+    for (let k = 1; k <= parts.length; k++) allPaths.add(parts.slice(0, k).join("/"));
+  }
+  const counts = (path: string) => {
+    const depth = path ? path.split("/").length : 0;
+    const subfolders = [...allPaths].filter((p) => p.split("/").length === depth + 1 && (!path || p.startsWith(`${path}/`))).length;
+    const present = items.filter((i) => i.status !== "removed");
+    return {
+      subfolders,
+      files: present.filter((i) => i.path === path).length,
+      total: present.filter((i) => inside(i, path)).length,
+    };
+  };
+  const countLabel = (path: string) => {
+    const c = counts(path);
+    const parts = [c.subfolders ? `${c.subfolders} folder${c.subfolders === 1 ? "" : "s"}` : "", `${c.files} file${c.files === 1 ? "" : "s"}`].filter(Boolean);
+    return `${parts.join(" · ")}${c.subfolders ? ` · ${c.total} in all` : ""}`;
+  };
+
   const shown = items.filter((i) =>
     filter === "all"
       ? true
@@ -172,7 +218,8 @@ export function DriveTree({
   };
   // Folder tree: every folder path, with the files directly inside it.
   const folders = (() => {
-    const paths = new Set<string>([""]);
+    // Empty folders too, when showing everything.
+    const paths = new Set<string>(["", ...(filter === "all" ? folderPaths : [])]);
     for (const i of shown) {
       const parts = i.path.split("/").filter(Boolean);
       for (let k = 1; k <= parts.length; k++) paths.add(parts.slice(0, k).join("/"));
@@ -204,24 +251,15 @@ export function DriveTree({
     return ids.size === 1 ? [...ids][0] : "mixed";
   };
 
-  const bring = (process: boolean) => {
-    addDriveImports(
-      toBring.map((i) => ({
-        id: i.id,
-        name: i.name,
-        courseId: i.course_id,
-        changed: i.status === "changed",
-        process,
-      })),
-    );
-    const n = `${toBring.length} file${toBring.length === 1 ? "" : "s"}`;
+  // Saves the ticked files in Lengible and processes them (reads them for topics, search, quizzes and flashcards).
+  const bring = () => {
+    addDriveImports(toBring.map((i) => ({ id: i.id, name: i.name, courseId: i.course_id, changed: i.status === "changed", process: true })));
     setNote({
       ok: true,
-      text: process
-        ? `${n} coming in and being processed. Follow them in the corner panel; you can leave this page.`
-        : `${n} coming in (stored only). Tap Process on a folder or file when you need it read.`,
+      text: `${toBring.length} file${toBring.length === 1 ? "" : "s"} coming in and being processed. Watch the bars fill here or in the corner panel; you can leave this page.`,
     });
   };
+  const overall = folderProgress("");
   const nothingYet = !items.some((i) => i.status === "imported");
 
   return (
@@ -233,28 +271,20 @@ export function DriveTree({
               <b className="text-text">Tick</b> the folders and files you want in Lengible (below). Nothing is taken until you choose.
             </li>
             <li>
-              <b className="text-text">Bring in only</b> to store them, or <b className="text-text">Bring in &amp; process</b> to also read them for
-              topics, quizzes and flashcards.
+              Tap <b className="text-text">Bring in &amp; process</b>: they&apos;re saved in Lengible and read for topics, search, quizzes and
+              flashcards. Each bar fills to 100% (green) when done.
             </li>
             <li>What you picked stays up to date with Drive.</li>
           </ol>
         )}
         <div className="flex flex-wrap items-center gap-x-1 gap-y-2">
-          <Button disabled={!toBring.length} onClick={() => bring(false)}>
-            <Download size={16} /> Bring in only
-            {toBring.length ? ` (${toBring.length})` : ""}
-          </Button>
-          <InfoTip label="Bring in only" className="mr-2">
-            Copies the ticked files into your Library without reading them. Quick. They show as “Stored · not processed”; tap <b>Process</b> on a
-            folder or file when you need it.
-          </InfoTip>
-          <Button variant="secondary" disabled={!toBring.length} onClick={() => bring(true)}>
+          <Button disabled={!toBring.length} onClick={bring}>
             <Play size={16} /> Bring in &amp; process
             {toBring.length ? ` (${toBring.length})` : ""}
           </Button>
           <InfoTip label="Bring in & process" className="mr-2">
-            Copies the ticked files and reads them straight away: topics are found and the text is saved, so you can search them and make flashcards
-            and quizzes. Takes longer; follow it in the corner panel.
+            Saves the ticked files in Lengible and reads them: topics are found and the text is saved, so you can search them, ask Ally and make
+            flashcards and quizzes. Nothing is saved or processed until you tap this. PowerPoint and Word files stay linked to Drive (no storage used).
           </InfoTip>
           <Button variant="secondary" disabled={checking} onClick={() => check(false)}>
             {checking ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />} Check for changes
@@ -278,6 +308,11 @@ export function DriveTree({
           })()}
         </p>
         {!toBring.length && nothingYet && <p className="text-xs text-muted">Tick something below to bring it in.</p>}
+        {overall !== null && !nothingYet && (
+          <div className="flex items-center gap-2 text-xs text-muted">
+            Processed overall <ProgressPct pct={overall} label="Processed overall" />
+          </div>
+        )}
         {storedIn("").length > 0 && (
           <div className="flex items-center gap-1">
             <Button variant="secondary" onClick={() => processThese(storedIn(""))}>
@@ -300,12 +335,12 @@ export function DriveTree({
               }}
               className="mt-0.5 size-4 accent-[var(--brand)]"
             />
-            <span>Keep what I picked up to date</span>
+            <span>Keep what I brought in up to date</span>
           </label>
-          <InfoTip label="Keep what I picked up to date" className="-mt-0.5">
-            When Drive changes, newer versions of files you brought in replace the old ones (processed again if you had processed them), and new files
-            in folders you ticked whole come in by themselves. Changed timetables and topic lists wait for you to review what changed. Turn off to
-            bring in updates only when you choose.
+          <InfoTip label="Keep what I brought in up to date" className="-mt-0.5">
+            When Drive changes, newer versions of files you brought in replace the old ones and are processed again, and new files in folders you
+            brought in come in and are processed by themselves. Ticking alone never starts anything. Changed timetables and topic lists wait for
+            you to review what changed.
           </InfoTip>
         </div>
         {note && <p className={cx("text-sm", note.ok ? "text-muted" : "text-danger")}>{note.text}</p>}
@@ -421,13 +456,14 @@ export function DriveTree({
                     >
                       {path.split("/").at(-1)}
                       <span className="ml-1.5 text-xs font-normal text-muted">
-                        {tickState(path).on}/{tickState(path).total}
+                        {countLabel(path)}
                         {lastChange(path) ? ` · changed ${whenLabel(lastChange(path)!)}` : ""}
                       </span>
                       {shown.some((i) => (i.path === path || i.path.startsWith(`${path}/`)) && isNewInDrive(i) && i.status !== "removed") && (
                         <span className="ml-1.5 rounded-full bg-brand-soft px-1.5 text-xs font-medium text-brand-strong">New files</span>
                       )}
                     </button>
+                    {folderProgress(path) !== null && <ProgressPct pct={folderProgress(path)!} label={`${path.split("/").at(-1)} processed`} />}
                     {storedIn(path).length > 0 && (
                       <button
                         type="button"
@@ -468,6 +504,10 @@ export function DriveTree({
                       className="size-4 shrink-0 accent-[var(--brand)]"
                       aria-label={`Include ${i.name}`}
                     />
+                    {(() => {
+                      const pr = progressOf(i);
+                      return pr ? <ProgressPct pct={pr.pct} failed={pr.failed} label={`${i.name} processed`} /> : <span className="w-[86px] shrink-0" />;
+                    })()}
                     <FileText size={15} className="shrink-0 text-muted" />
                     <span className="min-w-0 flex-1">
                       {i.file_id && i.status === "imported" ? (
@@ -484,7 +524,7 @@ export function DriveTree({
                           </span>
                         ) : isStored(i) ? (
                           <>
-                            <span className="rounded-full bg-surface-2 px-1.5 text-muted">Stored · not processed</span>
+                            <span className="rounded-full bg-danger/10 px-1.5 text-danger">Saved · not processed</span>
                             <button
                               type="button"
                               onClick={() => processThese([i])}
@@ -494,9 +534,7 @@ export function DriveTree({
                             </button>
                           </>
                         ) : (
-                          <span className={cx("rounded-full px-1.5", statusChip[i.status].cls)}>
-                            {i.status === "imported" ? "Processed" : statusChip[i.status].label}
-                          </span>
+                          i.status !== "imported" && <span className={cx("rounded-full px-1.5", statusChip[i.status].cls)}>{statusChip[i.status].label}</span>
                         )}
                         {isNewInDrive(i) && i.status !== "removed" && (
                           <span className="rounded-full bg-brand px-1.5 font-medium text-on-brand">New in Drive</span>

@@ -4,6 +4,7 @@ import type { LibraryFile } from "@/lib/supabase/types";
 import { docTypeLabel, formatBytes } from "@/lib/library";
 import { formatDate } from "@/lib/dates";
 import { cx } from "@/components/ui";
+import { ProgressPct } from "@/components/progress-pct";
 
 export function FileTypeIcon({ file, size = 20 }: { file: Pick<LibraryFile, "mime_type" | "storage_path">; size?: number }) {
   const p = file.storage_path.toLowerCase();
@@ -15,9 +16,7 @@ export function FileTypeIcon({ file, size = 20 }: { file: Pick<LibraryFile, "mim
 }
 
 const statusBadge: Partial<Record<LibraryFile["status"], { text: string; cls: string }>> = {
-  uploaded: { text: "Not processed", cls: "bg-surface-2 text-muted" },
   no_text: { text: "Needs AI reading", cls: "bg-warn/15 text-warn" },
-  failed: { text: "Failed", cls: "bg-danger/15 text-danger" },
 };
 
 export function FileRow({ file, courseName }: { file: LibraryFile; courseName?: string }) {
@@ -37,6 +36,8 @@ export function FileRow({ file, courseName }: { file: LibraryFile; courseName?: 
         </span>
       </span>
       {needsReview && <span className="shrink-0 rounded-full bg-brand px-2 py-0.5 text-[11px] font-medium text-on-brand">Review</span>}
+      {/* Processed: green 100%; not processed yet: red 0%; failed: red. */}
+      <ProgressPct pct={["analysed", "extracted", "no_text"].includes(file.status) ? 100 : 0} failed={file.status === "failed"} />
       {badge && <span className={cx("shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium", badge.cls)}>{badge.text}</span>}
     </Link>
   );

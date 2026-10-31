@@ -5,7 +5,7 @@ import { AIError, generateJSON } from "@/lib/ai";
 
 type DB = SupabaseClient<Database>;
 
-// Ask AI: answers a question from your own materials, citing the exact file and slide/page.
+// Ask Ally: answers a question from your own materials, citing the exact file and slide/page.
 // 1. The AI looks at how your files are grouped (folders, file names) and the question, and plans the search:
 //    search words (with synonyms, drug and disease names), the files that clearly fit, and any slides you named.
 // 2. Lengible searches the text of those files (and everything else in scope) and ranks the pages.
@@ -173,7 +173,7 @@ export async function ask(supabase: DB, question: string, scope: AskScope, histo
         `Question: ${question}\n\nTheir files (numbered; course / folder path / file name):\n${catalog.map((c, i) => `${i + 1}. ${c.line}`).join("\n")}\n\n` +
         "Plan how to find the answer in these files.",
       planSchema,
-      { system: "You plan searches over a Nigerian MBBS student's lecture slides (Pathology and Pharmacology).", temperature: 0.2 },
+      { system: "You plan searches over a Nigerian MBBS student's lecture slides (Pathology and Pharmacology).", temperature: 0.2, purpose: "ally" },
     );
   } catch (e) {
     if (e instanceof AIError) throw e;
@@ -312,6 +312,7 @@ export async function ask(supabase: DB, question: string, scope: AskScope, histo
         "You are a careful medical tutor for a Nigerian 400-level MBBS student (Pathology and Pharmacology). Answer from the student's own slides first and cite them with [n]. Never invent citations. Be accurate about drugs, doses and mechanisms.",
       temperature: 0.3,
       maxOutputTokens: 4000,
+      purpose: "ally",
     },
   );
   const valid = (n: number) => n >= 1 && n <= sources.length;

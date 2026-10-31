@@ -8,7 +8,7 @@ A personal study app for medical school, starting with Pathology and Pharmacolog
 
 ### 1. Supabase: database and login
 1. Sign up at [supabase.com](https://supabase.com), click **New project**, name it `lengible`, set a database password (save it) and pick the nearest region. Stay on the Free plan.
-2. When the project is ready, open **SQL Editor → New query**, paste everything from `supabase/migrations/0001_foundation.sql` and click **Run**. You should see "Success. No rows returned". Then do the same with `0002_library.sql`, `0003_drugs.sql`, `0004_flashcards.sql`, `0005_quiz_engine.sql`, `0006_material_topics.sql`, `0007_drive_links.sql` (and any later numbered files, in order).
+2. When the project is ready, open **SQL Editor → New query**, paste everything from `supabase/migrations/0001_foundation.sql` and click **Run**. You should see "Success. No rows returned". Then do the same with `0002_library.sql`, `0003_drugs.sql`, `0004_flashcards.sql`, `0005_quiz_engine.sql`, `0006_material_topics.sql`, `0007_drive_links.sql`, `0008_ally_and_history.sql` (and any later numbered files, in order). Every file is safe to run again.
 3. Create your account: **Authentication → Users → Add user → Create new user**. Enter your email and a password, and tick **Auto Confirm User**.
 4. Lock it down so nobody else can sign up: **Authentication → Sign In / Providers**, turn off **Allow new users to sign up**, and save.
 5. Copy your keys from **Project Settings → API** (the page may be called "API Keys"). You need the **Project URL** and the **anon / public** key. Never use the `service_role` / secret key in this app.
@@ -25,6 +25,15 @@ Go to [aistudio.google.com/apikey](https://aistudio.google.com/apikey), sign in 
    | `SUPABASE_URL` | your Supabase Project URL | any |
    | `SUPABASE_ANON_KEY` | your Supabase publishable key (`sb_publishable_…`) | any |
    | `GEMINI_API_KEY` | your Gemini key | Secret |
+
+   Optional, to use Claude or ChatGPT instead of Gemini (for everything, or only for Ally):
+
+   | Name | Value |
+   |---|---|
+   | `AI_PROVIDER` | `gemini` (default), `anthropic` (Claude) or `openai` (ChatGPT) — reading files, quizzes, flashcards |
+   | `ALLY_PROVIDER` | the same choices, for the Ally chat only (default: same as `AI_PROVIDER`) |
+   | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | the key for the provider you chose (Secret) |
+   | `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `GEMINI_MODEL`, `ALLY_MODEL` | optional: pin a model (defaults: `claude-opus-5-5`, `gpt-5`, `gemini-flash-latest`) |
 
    The app also accepts `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY`, but Vercel stores *Secret* variables with a `NEXT_PUBLIC_` name as empty, so the plain names are simpler.
 
@@ -87,24 +96,29 @@ public/sw.js          service worker (install + offline)
 6. Course intelligence
 7. Pathology picture tests and on-request diagrams
 
-## Ask AI and quizzes from your slides
+## Ask Ally and quizzes from your slides
 
-**Ask AI** (sidebar, and on every course, Library folder and file page) answers questions from your processed files. The AI first
+**Ally** is Lengible's study assistant (sidebar → Ask Ally, and a small Ask Ally box on every course, Library folder and file page).
+It works like a chat app: your conversations are saved in the list on the left (needs `0008_ally_and_history.sql`), suggestions
+fill the message box without sending, and you choose where Ally searches (everything, a course, or Pathology as a whole). Ally first
 plans the search from your question and how your files are grouped (course / folder / file names): search words with synonyms and
 drug or disease names, the files that fit, and any slides you name ("slides 10–20 of the anaemia lecture"). Lengible then searches
-the text and ranks the pages, and the AI answers from the best ones with numbered sources that open the exact slide. "Which slides
-cover…" lists where something is; "quiz me on…" builds a quiz written only from those slides. Files stored but not processed aren't
-searched. Each question uses two AI calls.
+the text and ranks the pages, and Ally answers from the best ones with numbered sources that open the exact slide. "Which slides
+cover…" lists where something is; "quiz me on…" builds a quiz written only from those slides. Files not processed yet aren't
+searched. Each question uses two AI calls (provider: `ALLY_PROVIDER`).
 
 **Quiz me on this file / folder**: on a file page (optionally slides from–to) or a Library folder; questions come only from that material.
 
 ## Google Drive links (optional)
 
 Library → Google Drive links lists everything in a folder shared "Anyone with the link" (e.g. your class folder). Nothing is taken until
-you tick folders or files; then **Bring in only** stores them and **Bring in & process** also reads them (stored files can be processed
-later, per folder or file). Folders are mirrored and matched to courses. The link is checked again every few hours while Lengible is
-open: newer versions of what you picked replace the old ones (processed again if you had processed them), new files in folders you
-ticked whole come in by themselves, and changed timetables and topic lists show exactly what changed before you apply them. PowerPoint and Word files (and anything over 50 MB) aren't copied into Supabase storage: Lengible keeps a link, reads their text on
+you tick folders or files and tap **Bring in & process**, which saves them in Lengible and reads them. Each file and folder shows a
+progress bar (green 100% = processed, red 0% = not processed), and each folder shows exactly how many subfolders and files it holds.
+Folders are mirrored and matched to courses. The link is checked when Lengible opens and every hour while it's open (and when you open
+the link's page): newer versions of what you brought in replace the old ones and are processed again, new files in folders you brought
+in come in and are processed by themselves (ticking alone never starts anything), and changed timetables and topic lists show exactly
+what changed before you apply them. **Disconnect** keeps everything you brought in working; **Reconnect** (Drive links page, or paste
+the same link again) picks up where it left off without downloading or processing anything twice. PowerPoint and Word files (and anything over 50 MB) aren't copied into Supabase storage: Lengible keeps a link, reads their text on
 the server, and shows them with Google's viewer, so there's no size limit and they don't use your 1 GB of free storage. It needs a free Google API key:
 console.cloud.google.com → enable **Google Drive API** → Credentials → Create API key (restrict it to Google Drive API) → add
 `GOOGLE_DRIVE_API_KEY` in Vercel and redeploy.

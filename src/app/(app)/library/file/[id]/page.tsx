@@ -55,11 +55,14 @@ export default async function FilePage({ params, searchParams }: PageProps<"/lib
   const { data: driveItem } = await supabase.from("drive_items").select("drive_id, resource_key").eq("file_id", id).limit(1).maybeSingle();
   const driveUrl = driveItem ? driveOpenUrl(driveItem.drive_id, driveItem.resource_key) : null;
   // Linked from Drive (PowerPoint/Word or very big files): nothing copied; shown with Google's viewer.
-  const linked = isDrivePath(file.storage_path) && driveItem
+  // The Drive id is part of its saved path, so it still opens if the Drive link was forgotten.
+  const linkedId = isDrivePath(file.storage_path) ? (driveItem?.drive_id ?? file.storage_path.slice(6).split("/")[0]) : null;
+  const linkedKey = driveItem?.resource_key ?? null;
+  const linked = linkedId
     ? {
-        open: driveUrl!,
-        download: `https://drive.google.com/uc?export=download&id=${driveItem.drive_id}${driveItem.resource_key ? `&resourcekey=${driveItem.resource_key}` : ""}`,
-        preview: drivePreviewUrl(driveItem.drive_id, driveItem.resource_key),
+        open: driveOpenUrl(linkedId, linkedKey),
+        download: `https://drive.google.com/uc?export=download&id=${linkedId}${linkedKey ? `&resourcekey=${linkedKey}` : ""}`,
+        preview: drivePreviewUrl(linkedId, linkedKey),
       }
     : null;
   const topicName = new Map((topics ?? []).map((t) => [t.id, t.name]));

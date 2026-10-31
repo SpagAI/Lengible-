@@ -11,6 +11,26 @@ export type Stage = "waiting" | "uploading" | "reading" | "analysing" | "done" |
 export type Step = "upload" | "text" | "pictures" | "ai" | "save";
 export type Progress = { stage: Stage; message?: string; step?: Step; done?: number; total?: number };
 
+// How far along a file is, 0–100, for progress bars: copying ~10%, reading the text up to ~50%, the AI pass up to 100%.
+export function progressPercent(p: Progress): number {
+  const frac = p.total ? Math.min(1, (p.done ?? 0) / p.total) : 0;
+  switch (p.stage) {
+    case "waiting":
+    case "error":
+      return 0;
+    case "uploading":
+      return 5;
+    case "reading":
+      return p.step === "pictures" ? 30 + Math.round(20 * frac) : 10 + Math.round(20 * frac);
+    case "analysing":
+      return p.total ? 50 + Math.round(45 * frac) : 55;
+    case "paused":
+      return 50;
+    default:
+      return 100;
+  }
+}
+
 export type AnalyzeResult = { status: "done" | "more" | "review" | "rate_limited" | "skipped" | "error" | "busy"; message?: string; cursor?: number; total?: number };
 
 // At most this many picture pages are read per file in one go (about 150 AI calls).
