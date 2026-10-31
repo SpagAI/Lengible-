@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { enqueue, isStarted, jobPercent, type ProcessJob } from "@/lib/jobs";
 import { isMissingTable } from "@/lib/drugs";
+import { serviceKey } from "@/lib/supabase/admin";
 
 // The processing queue: GET lists your jobs (running and recent), POST adds files or pauses/resumes/stops/retries.
 export async function GET() {
@@ -15,19 +16,26 @@ export async function GET() {
   ]);
   if (error) return NextResponse.json({ jobs: [], setup: isMissingTable(error) });
   // Totals over every job (the list above is capped at 300 for speed), so the panel's numbers are exact.
-  const summary = { total: 0, active: 0, waiting: 0, paused: 0, failed: 0, done: 0, percent: 0 };
+  const summary = { total: 0, active: 0, waiting: 0, paused: 0, failed: 0, done: 0, percent: 0, waitingAi: 0, lastProgress: null as string | null, doneToday: 0 };
   let sum = 0;
   for (let from = 0; from < 50000; from += 1000) {
     const { data } = await supabase
       .from("process_jobs")
-      .select("state, step, progress, not_before, finished_at")
+      .select("state, step, progress, not_before, finished_at, note, updated_at")
       .or(`state.neq.done,finished_at.gt.${dayAgo}`)
       .order("id")
       .range(from, from + 999);
     for (const j of data ?? []) {
       summary.total++;
       if (j.state === "queued") summary.active++;
-      if (j.state === "queued" && j.not_before && new Date(j.not_before).getTime() > Date.now()) summary.waiting++;
+      if (j.state === "queued" && j.not_before && new Date(j.not_before).getTime() > Date.now()) {
+        summary.waiting++;
+        // Waiting for Google's AI limit (per minute or per day), not a problem with the file.
+        if (/limit|allowance|overloaded|busy/i.test(j.note ?? "")) summary.waitingAi++;
+      }
+      if (j.state === "done" && j.finished_at && j.finished_at > dayAgo) summary.doneToday++;
+      // When anything last moved forward.
+      if (j.updated_at && (!summary.lastProgress || j.updated_at > summary.lastProgress)) summary.lastProgress = j.updated_at;
       if (j.state === "paused" || j.state === "stopped") summary.paused++;
       if (j.state === "failed") summary.failed++;
       if (j.state === "done") summary.done++;
@@ -59,7 +67,9 @@ export async function GET() {
       finishedAt: job.finished_at,
     };
   });
-  return NextResponse.json({ jobs, summary });
+  // Whether the background worker can run (its settings are in Vercel). If not, files only move while Lengible is open.
+  const worker = { configured: !!(process.env.CRON_SECRET?.trim() && serviceKey()) };
+  return NextResponse.json({ jobs, summary, worker });
 }
 
 type Body =

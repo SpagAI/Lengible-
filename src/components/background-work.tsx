@@ -132,6 +132,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
   const [server, setServer] = useState<ServerJob[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [setupNeeded, setSetupNeeded] = useState(false);
+  const [workerReady, setWorkerReady] = useState(true);
   const uploading = useRef(false);
   const wakeRef = useRef<() => void>(() => {});
 
@@ -144,7 +145,8 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
     try {
       const r = await (await fetch("/api/jobs", { cache: "no-store" })).json();
       setServer(r.jobs ?? []);
-      setSummary(r.summary ?? null);
+      setSummary(r.summary ? { ...r.summary, minsSince: r.summary.lastProgress ? Math.max(0, Math.round((Date.now() - Date.parse(r.summary.lastProgress)) / 60000)) : null } : null);
+      setWorkerReady(r.worker ? !!r.worker.configured : true);
       setSetupNeeded(!!r.setup);
       return (r.jobs ?? []) as ServerJob[];
     } catch {
@@ -293,6 +295,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
         uploads={uploads}
         server={server}
         summary={summary}
+        workerReady={workerReady}
         setupNeeded={setupNeeded}
         control={control}
         onClear={async () => {
@@ -340,12 +343,32 @@ function JobButtons({ job, control }: { job: ServerJob; control: (a: "pause" | "
 }
 
 // Totals over every job in the queue (the list itself shows at most 300).
-type Summary = { total: number; active: number; waiting: number; paused: number; failed: number; done: number; percent: number };
+type Summary = {
+  total: number;
+  active: number;
+  waiting: number;
+  paused: number;
+  failed: number;
+  done: number;
+  percent: number;
+  waitingAi?: number;
+  doneToday?: number;
+  lastProgress?: string | null;
+  minsSince?: number | null;
+};
+
+function ago(m: number) {
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
+}
 
 function Dock({
   uploads,
   server,
   setupNeeded,
+  workerReady,
   summary,
   control,
   onClear,
@@ -353,6 +376,7 @@ function Dock({
   uploads: UploadJob[];
   server: ServerJob[];
   setupNeeded: boolean;
+  workerReady: boolean;
   summary: Summary | null;
   control: (a: "pause" | "resume" | "stop" | "retry" | "remove" | "retry-waiting", ids?: string[]) => Promise<void>;
   onClear: () => void;
@@ -481,7 +505,7 @@ function Dock({
                 ? `${nFailed} need${nFailed === 1 ? "s" : ""} attention`
                 : "Processing finished"}
           <span className="block text-[11px] font-normal text-muted">
-            {summary ? `${summary.done} done${nWaiting ? ` · ${nWaiting} waiting after a problem` : ""}${nFailed ? ` · ${nFailed} failed` : ""} · ` : ""}on the server, keeps going with Lengible closed
+            {summary ? `${summary.done} done${nWaiting ? ` · ${nWaiting} waiting after a problem` : ""}${nFailed ? ` · ${nFailed} failed` : ""} · ` : ""}{workerReady ? "on the server, keeps going with Lengible closed" : "moves only while Lengible is open"}
           </span>
         </span>
         {(summary?.total ?? server.length) > 0 && <ProgressPct pct={overall} label="All files in the queue" />}
@@ -520,6 +544,23 @@ function Dock({
       {setupNeeded && (
         <p className="border-b border-border px-3 py-2 text-warn">
           Server processing needs one setup step: run supabase/migrations/0009_server_processing.sql in Supabase.
+        </p>
+      )}
+      {summary && summary.total > 0 && (
+        <p className="border-b border-border px-3 py-1.5 text-[11px] text-muted">
+          Done in the last 24 h: {summary.doneToday ?? 0}
+          {summary.minsSince != null ? ` · last progress ${ago(summary.minsSince)}` : ""}
+          {summary.waitingAi ? ` · ${summary.waitingAi} waiting for Google's AI limit to reset` : ""}
+        </p>
+      )}
+      {summary && (summary.waitingAi ?? 0) > 0 && (
+        <p className="border-b border-border px-3 py-2 text-warn">
+          Google is limiting how much AI work your key can do right now, so files wait and retry on their own. A paid Gemini tier (billing on your API key&apos;s project) removes most of this.
+        </p>
+      )}
+      {!workerReady && (summary?.total ?? 0) > 0 && (
+        <p className="border-b border-border px-3 py-2 text-warn">
+          The background worker isn&apos;t set up, so files only move while Lengible is open. Add SUPABASE_SERVICE_ROLE_KEY and CRON_SECRET in Vercel, then run supabase/setup_worker.sql.
         </p>
       )}
       {summary && summary.total > server.length && (
