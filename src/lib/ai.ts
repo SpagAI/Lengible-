@@ -171,38 +171,59 @@ async function tryModel(choice: ModelChoice, model: string, prompt: string, opts
     try {
       return await callModel(prompt, opts, choice.provider, model);
     } catch (err) {
-      if (err instanceof AIError || !isRetryable(err) || attempt >= retries) throw err;
+      // A used-up daily allowance doesn't come back in seconds: no point retrying it.
+      if (err instanceof AIError || !isRetryable(err) || attempt >= retries || (statusOf(err) === 429 && isDailyLimit(err))) throw err;
       await new Promise((r) => setTimeout(r, aiConfig.retryBaseDelayMs * 2 ** attempt));
     }
   }
 }
 
-// Tries the main model (with retries), then the backup model, then explains what went wrong.
+// Models whose daily allowance is used up, and until when (so they're skipped instead of asked again).
+const exhausted = new Map<string, number>();
+
+// Tries the main model, then the backup and any extra models, then explains what went wrong.
+// A model at its limit hands over to the next one straight away (each has its own allowance on Gemini's free plan).
 async function callWithRetry(prompt: string, opts: GenerateOptions): Promise<string> {
   const choice = opts.purpose === "ally" ? aiConfig.ally : aiConfig;
+  const chain = [...new Set([choice.model, choice.fallbackModel, ...choice.extraModels].filter(Boolean))];
   let err: unknown;
-  try {
-    return await tryModel(choice, choice.model, prompt, opts, aiConfig.maxRetries);
-  } catch (e) {
-    err = e;
-  }
-  if (isRetryable(err) && choice.fallbackModel && choice.fallbackModel !== choice.model) {
+  let daily = 0;
+  let limited = 0;
+  for (let i = 0; i < chain.length; i++) {
+    const key = `${choice.provider}:${chain[i]}`;
+    if ((exhausted.get(key) ?? 0) > Date.now()) {
+      daily++;
+      continue;
+    }
+    const last = i === chain.length - 1;
     try {
-      return await tryModel(choice, choice.fallbackModel, prompt, opts, 1);
+      return await tryModel(choice, chain[i], prompt, opts, i === 0 || last ? aiConfig.maxRetries : 1);
     } catch (e) {
       err = e;
+      if (e instanceof AIError) throw e;
+      const status = statusOf(e);
+      if (status === 429) {
+        limited++;
+        if (isDailyLimit(e)) {
+          daily++;
+          exhausted.set(key, Date.now() + msUntilDailyReset());
+        }
+        continue;
+      }
+      // A model that isn't available (renamed or retired): try the next one.
+      if (status === 404 || isRetryable(e)) continue;
+      break;
     }
+  }
+  if (daily === chain.length) {
+    throw new AIError(
+      `${providerName[choice.provider]}'s daily AI allowance is used up (it resets once a day, around 8–9 am Nigerian time). Everything done so far is saved, and processing carries on by itself after the reset.`,
+      "rate_limit",
+    );
   }
   if (err instanceof AIError) throw err;
   const status = statusOf(err);
-  if (status === 429) {
-    // Google says which limit was hit (e.g. quotaId "GenerateRequestsPerDayPerProjectPerModel-FreeTier").
-    if (isDailyLimit(err)) {
-      throw new AIError(
-        `${providerName[choice.provider]}'s daily AI allowance is used up (it resets once a day, around 8–9 am Nigerian time). Everything done so far is saved, and processing carries on by itself after the reset.`,
-        "rate_limit",
-      );
-    }
+  if (limited) {
     throw new AIError(
       `${providerName[choice.provider]}'s per-minute AI limit was reached. Everything done so far is saved, and it carries on in a minute or two.`,
       "rate_limit",

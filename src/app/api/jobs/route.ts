@@ -28,7 +28,8 @@ export async function GET() {
     for (const j of data ?? []) {
       summary.total++;
       if (j.state === "queued") summary.active++;
-      if (j.state === "queued" && j.not_before && new Date(j.not_before).getTime() > Date.now()) {
+      // (A copy waiting for its twin's results isn't a problem: not counted as waiting.)
+      if (j.state === "queued" && j.not_before && new Date(j.not_before).getTime() > Date.now() && !/^Same file as/.test(j.note ?? "")) {
         summary.waiting++;
         // Waiting for Google's AI limit (per minute or per day), not a problem with the file.
         if (/limit|allowance|overloaded|busy/i.test(j.note ?? "")) summary.waitingAi++;

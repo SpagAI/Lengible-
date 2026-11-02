@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { AIError, generateJSON } from "@/lib/ai";
 import type { ConceptKind, Database, LibraryFile } from "@/lib/supabase/types";
 import { todayISO } from "@/lib/dates";
+import { fileContext, PROFILE_HINT, profileSchema } from "@/lib/profile";
 
 type DB = SupabaseClient<Database>;
 
@@ -58,6 +59,8 @@ export type Analysis = {
   finished?: boolean;
   lockUntil?: string | null;
   failures?: number;
+  // What the file is (course, set, kind…), worked out in the same AI call as its first pages.
+  profileGuess?: Record<string, unknown> & { course: string; kind: string };
 };
 
 const SYSTEM =
@@ -173,7 +176,7 @@ function mergeConcepts(into: FoundConcept[], found: FoundConcept[]) {
 }
 
 // Saves the drugs/diseases found in a file and links them to it.
-async function saveConcepts(supabase: DB, fileId: string, found: FoundConcept[]) {
+export async function saveConcepts(supabase: DB, fileId: string, found: FoundConcept[]) {
   await supabase.from("file_concepts").delete().eq("file_id", fileId);
   if (!found.length) return;
   const { data: existing } = await supabase.from("concepts").select("id, name, aliases");
@@ -223,7 +226,7 @@ function mergeSections(into: Section[], found: Section[]) {
 
 // Turns a file's sections into course topics: each joins the syllabus topic it matches, or becomes a new
 // topic marked "from your materials". Also records which pages of the file cover it.
-async function saveSections(supabase: DB, file: LibraryFile, sections: Section[], courses: { id: string; name: string; is_group: boolean }[]) {
+export async function saveSections(supabase: DB, file: LibraryFile, sections: Section[], courses: { id: string; name: string; is_group: boolean }[]) {
   await supabase.from("topic_files").delete().eq("file_id", file.id);
   const leaf = courses.filter((c) => !c.is_group);
   const fileCourse = leaf.find((c) => c.id === file.course_id);
@@ -338,7 +341,14 @@ export async function analyzeStep(supabase: DB, file: LibraryFile, full = false)
         if (file.course_id && !fileCourse?.is_group) tq = tq.eq("course_id", file.course_id);
         const { data: topics } = await tq;
         const last = state.sections?.at(-1);
-        const r = await generateJSON<{ sections: Section[]; concepts: FoundConcept[] }>(
+        // The first call also says what the file is (saves a separate AI call per file).
+        const first = state.cursor === 0;
+        const ctx = first ? await fileContext(supabase, file) : null;
+        const schema = first
+          ? { ...conceptSchema, properties: { ...conceptSchema.properties, file_profile: profileSchema }, required: [...conceptSchema.required, "file_profile"] }
+          : conceptSchema;
+        const r = await generateJSON<{ sections: Section[]; concepts: FoundConcept[]; file_profile?: Analysis["profileGuess"] }>(
+          (ctx ? `File name: ${ctx.name}\nWhere it is: ${ctx.where || "(top level)"}\n` : "") +
           `These are pages ${batch[0].page}–${batch[batch.length - 1].page} of "${file.name}" (${state.totalPages} pages in all), a medical student's ` +
             `${file.doc_type.replace("_", " ")} for ${fileCourse && !fileCourse.is_group ? fileCourse.name : "one of these courses: " + courseNames.join("; ")}.\n` +
             "1. Split the pages into sections, one per lecture or topic. A slide deck on one topic is ONE section; a compilation of lectures " +
@@ -348,11 +358,14 @@ export async function analyzeStep(supabase: DB, file: LibraryFile, full = false)
             (topics?.length ? `\nExisting syllabus topics (set matches to one of these, copied exactly, when a section is about it):\n${topics.map((t) => t.name).join(" | ")}` : "") +
             "\n2. List the drugs, diseases/conditions, organisms and laboratory investigations actually discussed, with the pages where each " +
             "appears. Use standard names (generic drug names, e.g. 'Omeprazole' not brand names). At most 60; skip passing mentions.\n" +
-            "Pages marked 'Image:' are descriptions of pictures on the slides; use them too.\n\n" +
+            "Pages marked 'Image:' are descriptions of pictures on the slides; use them too.\n" +
+            (first ? `3. file_profile: ${PROFILE_HINT}\n` : "") +
+            "\n" +
             text,
-          conceptSchema,
+          schema,
           { system: SYSTEM, maxOutputTokens: 16_000, temperature: 0.2 },
         );
+        if (first && r.file_profile) state.profileGuess = r.file_profile;
         state.sections ??= [];
         mergeSections(state.sections, r.sections ?? []);
         state.concepts ??= [];

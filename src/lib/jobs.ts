@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, FileStatus, LibraryFile } from "@/lib/supabase/types";
 import { AIError, generateJSON, isDailyMessage, msUntilDailyReset } from "@/lib/ai";
-import { analyzeStep, type Analysis, ANALYSIS_VERSION } from "@/lib/analysis/run";
+import { analyzeStep, type Analysis, ANALYSIS_VERSION, saveConcepts, saveSections } from "@/lib/analysis/run";
 import { download, isDrivePath, isOfficeTemp, unsupportedReason } from "@/lib/drive";
 import { parsePartsPath, partPaths } from "@/lib/library";
 import { importDriveItem, markDriveItemDone } from "@/lib/drive-import";
@@ -404,6 +404,12 @@ async function advance(supabase: DB, job: ProcessJob, deadline: number): Promise
   switch (job.step) {
     case "copy": {
       if (!job.drive_item_id) return { next: "text" };
+      const twin = await twinInProgress(supabase, job.drive_item_id);
+      if (twin)
+        return {
+          wait: { ms: 120_000, note: `Same file as “${twin}”, which is being processed now: its results are reused (no extra AI use).` },
+          patch: { priority: isStarted(job.priority) ? job.priority - STARTED : job.priority },
+        };
       const r = await importDriveItem(supabase, job.user_id, job.drive_item_id);
       if (r.status === "busy") {
         // Already brought in (e.g. by another device): carry on with that file.
@@ -435,6 +441,24 @@ async function advance(supabase: DB, job: ProcessJob, deadline: number): Promise
           supabase.from("topic_files").delete().eq("file_id", file.id),
           supabase.from("exam_questions").delete().eq("file_id", file.id),
         ]);
+      }
+      // The same file (identical bytes) already processed, e.g. a copy in another Drive folder: reuse its text,
+      // reading, search index and profile instead of asking the AI again.
+      if (!resuming) {
+        if (await reuseTwin(supabase, file, hash, buf.length)) return { next: "embed" };
+        // A copy being processed right now (copies are the same size, so they tend to start together): the one
+        // that came first carries on, and this one gives up its place and reuses the results when they're ready.
+        await supabase.from("files").update({ content_hash: hash }).eq("id", file.id);
+        const { data: twins } = await supabase.from("files").select("id, name").eq("content_hash", hash).lt("id", file.id).limit(5);
+        if (twins?.length) {
+          const { data: busy } = await supabase.from("process_jobs").select("file_id").in("file_id", twins.map((t) => t.id)).eq("state", "queued").limit(1);
+          const twin = twins.find((t) => t.id === busy?.[0]?.file_id);
+          if (twin)
+            return {
+              wait: { ms: 120_000, note: `Same file as “${twin.name}”, which is being processed now: its results are reused (no extra AI use).` },
+              patch: { priority: isStarted(job.priority) ? job.priority - STARTED : job.priority },
+            };
+        }
       }
       const save = async (pages: { page: number; text: string }[]) => {
         for (let i = 0; i < pages.length; i += 200) {
@@ -596,6 +620,64 @@ async function advance(supabase: DB, job: ProcessJob, deadline: number): Promise
     default:
       return { finished: true };
   }
+}
+
+// Drive gives each file's fingerprint (md5) before anything is downloaded, so identical copies in different folders
+// are known up front. The copy listed first is processed; the others wait for it (without holding a place), then
+// reuse its results.
+async function twinInProgress(supabase: DB, driveItemId: string) {
+  const { data: me } = await supabase.from("drive_items").select("md5").eq("id", driveItemId).maybeSingle();
+  if (!me?.md5) return null;
+  const { data: same } = await supabase.from("drive_items").select("id").eq("md5", me.md5).lt("id", driveItemId).limit(20);
+  if (!same?.length) return null;
+  const { data: busy } = await supabase
+    .from("process_jobs")
+    .select("name")
+    .in("drive_item_id", same.map((x) => x.id))
+    .eq("state", "queued")
+    .in("step", ["copy", "text", "pictures", "analyse", "profile"])
+    .limit(1);
+  return busy?.[0]?.name ?? null;
+}
+
+async function reuseTwin(supabase: DB, file: LibraryFile, hash: string, size: number) {
+  const { data: twins } = await supabase.from("files").select("*").eq("content_hash", hash).neq("id", file.id).not("profile", "is", null).limit(5);
+  const twin = ((twins ?? []) as LibraryFile[]).find((t) => {
+    const a = t.analysis as Analysis | null;
+    return a?.finished && a.kind === "concepts" && a.v === ANALYSIS_VERSION;
+  });
+  if (!twin) return false;
+  // Its pages (with picture descriptions and search index), copied over.
+  for (let from = 0; ; from += 500) {
+    const { data: pages } = await supabase.from("chunks").select("page, content, embedding").eq("file_id", twin.id).order("page").range(from, from + 499);
+    if (!pages?.length) break;
+    const { error } = await supabase.from("chunks").insert(pages.map((p) => ({ file_id: file.id, course_id: file.course_id, page: p.page, content: p.content, embedding: p.embedding ?? null })));
+    if (error) throw new Error(`Couldn't save the text: ${error.message}`);
+    if (pages.length < 500) break;
+  }
+  const analysis = { ...(twin.analysis as Analysis), lockUntil: null };
+  const { data: courses } = await supabase.from("courses").select("id, name, is_group").eq("archived", false);
+  const course_id = file.course_id ?? twin.course_id;
+  const me = { ...file, course_id };
+  await saveConcepts(supabase, file.id, analysis.concepts ?? []);
+  const saved = await saveSections(supabase, me, analysis.sections ?? [], courses ?? []);
+  const profile = twin.profile ? { ...twin.profile, edited: undefined, duplicate_of: twin.id } : null;
+  await supabase
+    .from("files")
+    .update({
+      page_count: twin.page_count,
+      size_bytes: size,
+      content_hash: hash,
+      status: "analysed",
+      analysis,
+      profile,
+      course_id,
+      doc_type: file.doc_type === "other" ? twin.doc_type : file.doc_type,
+      ...(!file.topic_id && saved.onlyTopic ? { topic_id: saved.onlyTopic } : {}),
+      error: null,
+    })
+    .eq("id", file.id);
+  return true;
 }
 
 async function finishPictures(supabase: DB, file: LibraryFile): Promise<Outcome> {

@@ -5,10 +5,12 @@
 //   ALLY_PROVIDER = gemini | anthropic | openai   (default: same as AI_PROVIDER)
 // Each provider needs its own key: GEMINI_API_KEY, ANTHROPIC_API_KEY (Claude) or OPENAI_API_KEY (ChatGPT).
 // Models can be pinned per provider (GEMINI_MODEL, ANTHROPIC_MODEL, OPENAI_MODEL, and *_FALLBACK_MODEL),
-// and Ally's separately with ALLY_MODEL / ALLY_FALLBACK_MODEL.
+// and Ally's separately with ALLY_MODEL / ALLY_FALLBACK_MODEL. GEMINI_EXTRA_MODELS adds more models to fall back on.
 
 export type Provider = "gemini" | "anthropic" | "openai";
-export type ModelChoice = { provider: Provider; model: string; fallbackModel: string };
+// extraModels: more models tried, in order, when the main and backup models have used up their allowance.
+// On Gemini's free plan each model has its own allowance, so each one adds to what can be done in a day.
+export type ModelChoice = { provider: Provider; model: string; fallbackModel: string; extraModels: string[] };
 
 const PROVIDERS: Provider[] = ["gemini", "anthropic", "openai"];
 const pick = (v: string | undefined, fallback: Provider): Provider => (PROVIDERS.includes(v as Provider) ? (v as Provider) : fallback);
@@ -25,6 +27,11 @@ const choice = (provider: Provider, model?: string, fallback?: string): ModelCho
   provider,
   model: model || defaults[provider].model,
   fallbackModel: fallback || defaults[provider].fallback,
+  // e.g. GEMINI_EXTRA_MODELS=gemini-2.5-flash,gemini-2.5-flash-lite (names as listed in AI Studio's rate limits page).
+  extraModels: (process.env[`${provider.toUpperCase()}_EXTRA_MODELS`] ?? "")
+    .split(",")
+    .map((m) => m.trim())
+    .filter(Boolean),
 });
 
 const mainProvider = pick(process.env.AI_PROVIDER, "gemini");

@@ -32,7 +32,7 @@ export function findExam(...texts: (string | null | undefined)[]): PaperKind | n
 
 const KINDS: FileProfile["kind"][] = ["lecture", "practical", "tutorial", "past_questions", "notes", "textbook", "timetable", "topic_list", "other"];
 
-const profileSchema = {
+export const profileSchema = {
   type: "object",
   properties: {
     course: { type: "string", description: "One of the course names given, exactly; empty when none fits" },
@@ -49,36 +49,55 @@ const profileSchema = {
   required: ["course", "posting", "set", "kind", "exam", "exam_year", "lecturer", "topics", "theory_or_practical", "summary"],
 };
 
-export async function profileStep(supabase: DB, file: LibraryFile) {
-  if (file.profile?.edited) return;
-  const [{ data: courses }, { data: folders }, { data: item }, { data: pages }] = await Promise.all([
+type ProfileAnswer = Omit<FileProfile, "exam" | "exam_year"> & { exam: string; exam_year: number };
+
+// Where a file lives and what it's called: the strongest clues to what it is.
+export async function fileContext(supabase: DB, file: LibraryFile) {
+  const [{ data: courses }, { data: folders }, { data: item }] = await Promise.all([
     supabase.from("courses").select("id, name, is_group").eq("archived", false),
     supabase.from("folders").select("id, name, parent_id"),
     supabase.from("drive_items").select("path, name").eq("file_id", file.id).limit(1).maybeSingle(),
-    supabase.from("chunks").select("page, content").eq("file_id", file.id).order("page").limit(4),
   ]);
   const folderPath: string[] = [];
   for (let f = folders?.find((x) => x.id === file.folder_id), guard = 0; f && guard < 20; f = folders?.find((x) => x.id === f!.parent_id), guard++) folderPath.unshift(f.name);
   const where = [item?.path, folderPath.join("/")].filter(Boolean).join(" | ");
-  const leaf = (courses ?? []).filter((c) => !c.is_group);
-  const start = (pages ?? []).map((p) => `[page ${p.page}] ${p.content.slice(0, 900)}`).join("\n").slice(0, 3600);
+  return { name: item?.name ?? file.name, where, leaf: (courses ?? []).filter((c) => !c.is_group) };
+}
 
-  const r = await generateJSON<Omit<FileProfile, "exam" | "exam_year"> & { exam: string; exam_year: number }>(
-    `Courses: ${leaf.map((c) => c.name).join("; ")}.\n` +
-      `File name: ${item?.name ?? file.name}\nWhere it is: ${where || "(top level)"}\nLengible type: ${file.doc_type}\n\nFirst pages:\n${start || "(no text)"}\n\n` +
-      "Say what this file is for a Nigerian MBBS student's study app. Folder names and file names are strong clues (e.g. '2K23', 'MB 2022', 'EOPT', 'Resit', 'Practical').",
-    profileSchema,
-    { system: "You classify medical school study files accurately. Prefer evidence from names and folders; don't guess years.", temperature: 0, maxOutputTokens: 1500 },
-  );
-  const set = findSet(item?.name, file.name, where, r.set) ?? null;
-  const exam = r.exam && r.exam !== "none" ? (r.exam as PaperKind) : findExam(item?.name, file.name, where);
+export const PROFILE_HINT =
+  "Say what this file is for a Nigerian MBBS student's study app. Folder names and file names are strong clues (e.g. '2K23', 'MB 2022', 'EOPT', 'Resit', 'Practical'). Don't guess years.";
+
+export async function profileStep(supabase: DB, file: LibraryFile) {
+  if (file.profile?.edited) return;
+  const ctx = await fileContext(supabase, file);
+  // Usually worked out already, in the same AI call that read the file's first pages.
+  let r = (file.analysis as { profileGuess?: ProfileAnswer } | null)?.profileGuess ?? null;
+  if (!r) {
+    const { data: pages } = await supabase.from("chunks").select("page, content").eq("file_id", file.id).order("page").limit(4);
+    const start = (pages ?? []).map((p) => `[page ${p.page}] ${p.content.slice(0, 900)}`).join("\n").slice(0, 3600);
+    r = await generateJSON<ProfileAnswer>(
+      `Courses: ${ctx.leaf.map((c) => c.name).join("; ")}.\n` +
+        `File name: ${ctx.name}\nWhere it is: ${ctx.where || "(top level)"}\nLengible type: ${file.doc_type}\n\nFirst pages:\n${start || "(no text)"}\n\n` +
+        PROFILE_HINT,
+      profileSchema,
+      { system: "You classify medical school study files accurately. Prefer evidence from names and folders; don't guess years.", temperature: 0, maxOutputTokens: 1500 },
+    );
+  }
+  await applyProfile(supabase, file, r, ctx);
+}
+
+async function applyProfile(supabase: DB, file: LibraryFile, r: ProfileAnswer, ctx: Awaited<ReturnType<typeof fileContext>>) {
+  // Names and folders win over the AI for the set and the exam (they're exact).
+  const set = findSet(ctx.name, file.name, ctx.where, r.set) ?? null;
+  const exam = findExam(ctx.name, file.name, ctx.where) ?? (r.exam && r.exam !== "none" ? (r.exam as PaperKind) : null);
+  const kind = KINDS.includes(r.kind) ? r.kind : "other";
   const profile: FileProfile = {
     course: r.course || null,
     posting: r.posting || null,
     set,
-    kind: KINDS.includes(r.kind) ? r.kind : "other",
-    exam: r.kind === "past_questions" || exam ? exam : null,
-    exam_year: r.exam_year && r.exam_year > 1980 && r.exam_year < 2100 ? r.exam_year : null,
+    kind,
+    exam: kind === "past_questions" || exam ? exam : null,
+    exam_year: findYear(ctx.name, file.name, ctx.where) ?? (r.exam_year && r.exam_year > 1980 && r.exam_year < 2100 ? r.exam_year : null),
     lecturer: r.lecturer || null,
     topics: (r.topics ?? []).slice(0, 8),
     theory_or_practical: r.theory_or_practical ?? null,
@@ -86,14 +105,24 @@ export async function profileStep(supabase: DB, file: LibraryFile) {
   };
   // Fill in what's missing on the file (never overriding your own choices).
   const patch: Partial<LibraryFile> = { profile };
-  const course = leaf.find((c) => c.name.toLowerCase() === (profile.course ?? "").toLowerCase());
+  const course = ctx.leaf.find((c) => c.name.toLowerCase() === (profile.course ?? "").toLowerCase());
   if (!file.course_id && course) patch.course_id = course.id;
   if (profile.kind === "past_questions" && ["other", "notes", "slides"].includes(file.doc_type)) patch.doc_type = (profile.exam === "mb" ? "mb_questions" : "past_questions") as DocType;
   await supabase.from("files").update(patch).eq("id", file.id);
 }
 
+// An exam year written in a file or folder name ("MB 2022", "Haem EOPT 2019"), only for past papers' names.
+function findYear(...texts: (string | null | undefined)[]) {
+  for (const t of texts) {
+    if (!t || !/\b(mb|eopt|resit|exam|past|questions?|paper|test)\b/i.test(t)) continue;
+    const m = t.match(/\b(19[89]\d|20[0-4]\d)\b/);
+    if (m) return Number(m[1]);
+  }
+  return null;
+}
+
 export const needsQuestions = (file: Pick<LibraryFile, "doc_type" | "profile">) =>
-  file.doc_type === "past_questions" || file.doc_type === "mb_questions" || file.profile?.kind === "past_questions";
+  !file.profile?.duplicate_of && (file.doc_type === "past_questions" || file.doc_type === "mb_questions" || file.profile?.kind === "past_questions");
 
 // ——— The question bank ———
 
@@ -122,7 +151,20 @@ const questionsSchema = {
   required: ["questions"],
 };
 
-const PAGES_PER_CALL = 6;
+// Pages per AI call: as many as fit in about 24,000 characters (up to 15), so short pages share one call
+// while dense pages still leave the AI room to write every question out in full.
+const MAX_PAGES_PER_CALL = 15;
+const MAX_CHARS_PER_CALL = 24_000;
+function questionBatch<T extends { content: string }>(pages: T[], at: number) {
+  const out: T[] = [];
+  let size = 0;
+  for (let i = at; i < pages.length && out.length < MAX_PAGES_PER_CALL; i++) {
+    if (out.length && size + pages[i].content.length > MAX_CHARS_PER_CALL) break;
+    out.push(pages[i]);
+    size += pages[i].content.length;
+  }
+  return out;
+}
 
 // Pulls every question out of a past-question file, a few pages per AI call (the place is saved after each),
 // and groups each one with the same question asked in other years (by meaning when possible).
@@ -133,7 +175,7 @@ export async function questionsStep(supabase: DB, file: LibraryFile, cursor: num
   let at = cursor;
   if (at === 0) await supabase.from("exam_questions").delete().eq("file_id", file.id);
   while (at < all.length && Date.now() < deadline - 45_000) {
-    const batch = all.slice(at, at + PAGES_PER_CALL);
+    const batch = questionBatch(all, at);
     const r = await generateJSON<{
       questions: { page: number; number: string; question: string; format: ExamQuestion["format"]; marks: number; topic: string; exam: string; exam_year: number; set: string }[];
     }>(
@@ -143,7 +185,7 @@ export async function questionsStep(supabase: DB, file: LibraryFile, cursor: num
         "Skip instructions, headers and answer keys.\n\n" +
         batch.map((b) => `--- Page ${b.page} ---\n${b.content}`).join("\n\n"),
       questionsSchema,
-      { system: "You extract exam questions from Nigerian medical school past papers, exactly as written.", temperature: 0, maxOutputTokens: 16_000 },
+      { system: "You extract exam questions from Nigerian medical school past papers, exactly as written.", temperature: 0, maxOutputTokens: 32_000 },
     );
     const rows = (r.questions ?? [])
       .filter((q) => q.question?.trim().length > 8)

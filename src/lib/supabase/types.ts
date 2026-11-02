@@ -131,6 +131,9 @@ export type FileProfile = {
   summary: string;
   // You corrected it: the AI leaves it alone.
   edited?: boolean;
+  // The same file (identical bytes) was already processed: its results were reused, and its past questions
+  // aren't added to the question bank twice.
+  duplicate_of?: string;
 };
 
 export type ExamQuestion = {
