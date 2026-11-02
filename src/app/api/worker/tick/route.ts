@@ -22,10 +22,10 @@ export async function POST(req: NextRequest) {
 
   // Who has work: files waiting in the queue, or Drive links due a check.
   const now = new Date().toISOString();
-  const hourAgo = new Date(Date.now() - 3600_000).toISOString();
+  const dueBefore = new Date(Date.now() - 30 * 60_000).toISOString();
   const [{ data: waiting }, { data: links }] = await Promise.all([
     admin.from("process_jobs").select("user_id").eq("state", "queued").or(`not_before.is.null,not_before.lt.${now}`).limit(500),
-    admin.from("drive_sources").select("user_id").is("removed_at", null).eq("auto_import", true).or(`last_checked_at.is.null,last_checked_at.lt.${hourAgo}`).limit(100),
+    admin.from("drive_sources").select("user_id").is("removed_at", null).eq("auto_import", true).or(`last_checked_at.is.null,last_checked_at.lt.${dueBefore}`).limit(100),
   ]);
   const users = [...new Set([...(waiting ?? []), ...(links ?? [])].map((r) => r.user_id))].slice(0, 5);
   const report: Record<string, unknown> = {};

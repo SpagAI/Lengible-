@@ -5,7 +5,7 @@ import { driveKey, syncItems } from "@/lib/drive";
 
 type DB = SupabaseClient<Database>;
 
-// Looks at your Drive links again (each at most once an hour, or now with force) and returns the files to
+// Looks at your Drive links again (each at most every 30 minutes, or now with force) and returns the files to
 // bring in: changed ones you brought in before, and new ones inside folders you already brought in.
 export async function checkDriveLinks(supabase: DB, force = false) {
   const { data: sources, error } = await supabase.from("drive_sources").select("*");
@@ -13,7 +13,7 @@ export async function checkDriveLinks(supabase: DB, force = false) {
 
   // Disconnected links aren't checked (their files stay in your Library).
   const live = (sources as DriveSource[]).filter((s) => !s.removed_at);
-  const due = live.filter((s) => force || !s.last_checked_at || Date.now() - new Date(s.last_checked_at).getTime() > 3600_000);
+  const due = live.filter((s) => force || !s.last_checked_at || Date.now() - new Date(s.last_checked_at).getTime() > 30 * 60_000);
   const summary = { checked: 0, added: 0, changed: 0, removed: 0, problems: [] as string[] };
   for (const s of due) {
     try {
@@ -36,12 +36,19 @@ export async function checkDriveLinks(supabase: DB, force = false) {
     .or(`claimed_at.is.null,claimed_at.lt.${stale}`)
     .limit(200);
   // Changed files you brought in before are always refreshed; new files only for links kept up to date.
-  // A new file comes in by itself only inside a folder you already brought in (ticking alone starts nothing).
+  // A new file comes in by itself only inside a folder you already brought in, or that is being processed now
+  // (ticking alone starts nothing).
   const sourcesWithNew = [...new Set((items ?? []).filter((i) => i.status === "new").map((i) => i.source_id))];
   const broughtIn = new Set<string>();
   for (const id of sourcesWithNew) {
     for (let from = 0; ; from += 1000) {
-      const { data } = await supabase.from("drive_items").select("path").eq("source_id", id).eq("status", "imported").range(from, from + 999);
+      // Brought in = finished, or already started (copied in, being processed, or stopped with a problem).
+      const { data } = await supabase
+        .from("drive_items")
+        .select("path")
+        .eq("source_id", id)
+        .or("status.in.(imported,error),file_id.not.is.null")
+        .range(from, from + 999);
       for (const r of data ?? []) broughtIn.add(`${id}/${r.path}`);
       if (!data || data.length < 1000) break;
     }

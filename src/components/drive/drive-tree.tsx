@@ -291,8 +291,8 @@ export function DriveTree({
             {checking ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />} Check for changes
           </Button>
           <InfoTip label="Check for changes">
-            Looks at the Google Drive again now for new files, newer versions and deleted files. Lengible also does this by itself every hour while
-            it&apos;s open, and when you open this page.
+            Looks at the Google Drive again now for new files, newer versions and deleted files. Lengible also does this by itself about every
+            30 minutes in the background (even with Lengible closed), and when you open this page.
           </InfoTip>
         </div>
         <p className="text-xs text-muted">
@@ -345,8 +345,8 @@ export function DriveTree({
             <span>Keep what I brought in up to date</span>
           </label>
           <InfoTip label="Keep what I brought in up to date" className="-mt-0.5">
-            When Drive changes, newer versions of files you brought in replace the old ones and are processed again, and new files in folders you
-            brought in come in and are processed by themselves. Ticking alone never starts anything. Changed timetables and topic lists wait for
+            When Drive changes, newer versions of files you brought in replace the old ones and are processed again, and new files added inside
+            folders you brought in (including folders still being processed) come in and are processed by themselves, within about 30 minutes. Ticking alone never starts anything. Changed timetables and topic lists wait for
             you to review what changed.
           </InfoTip>
         </div>
