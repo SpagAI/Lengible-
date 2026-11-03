@@ -134,6 +134,8 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
   const [setupNeeded, setSetupNeeded] = useState(false);
   const [workerReady, setWorkerReady] = useState(true);
   const workerReadyRef = useRef(false);
+  // Minutes since anything in the queue last moved.
+  const quietRef = useRef<number | null>(null);
   const uploading = useRef(false);
   const wakeRef = useRef<() => void>(() => {});
 
@@ -149,6 +151,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
       setSummary(r.summary ? { ...r.summary, minsSince: r.summary.lastProgress ? Math.max(0, Math.round((Date.now() - Date.parse(r.summary.lastProgress)) / 60000)) : null } : null);
       setWorkerReady(r.worker ? !!r.worker.configured : true);
       workerReadyRef.current = !!r.worker?.configured;
+      quietRef.current = r.summary?.lastProgress ? (Date.now() - Date.parse(r.summary.lastProgress)) / 60_000 : null;
       setSetupNeeded(!!r.setup);
       return (r.jobs ?? []) as ServerJob[];
     } catch {
@@ -234,7 +237,9 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
     const kick = async () => {
       // With the background worker set up, the server already works every minute: an open tab doesn't add
       // its own runs (they competed with it and slowed the app down).
-      if (kicking || workerReadyRef.current) return;
+      // But if nothing has moved for 3 minutes (the worker isn't being called, e.g. its schedule in Supabase
+      // isn't running), the tab carries on the work itself as before.
+      if (kicking || (workerReadyRef.current && (quietRef.current ?? 99) < 3)) return;
       kicking = true;
       await post("/api/worker/kick");
       kicking = false;
@@ -655,7 +660,9 @@ function Dock({
                                   ? `${STEP_TEXT[j.step] ?? j.step}${j.total ? ` · ${j.done ?? 0} of ${j.total}` : ""}`
                                   : j.started
                                     ? `Carrying on with “${STEP_TEXT[j.step] ?? j.step}”`
-                                    : "Waiting its turn (3 files at a time, smallest first)"}
+                                    : j.step === "embed"
+                                      ? "Ready to use. Search by meaning is added after the other files."
+                                      : "Waiting its turn (3 files at a time, smallest first)"}
                     </span>
                   </span>
                 </button>

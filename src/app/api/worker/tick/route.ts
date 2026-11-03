@@ -1,4 +1,4 @@
-import { NextResponse, type NextRequest } from "next/server";
+import { after, NextResponse, type NextRequest } from "next/server";
 import { adminClient, clientForUser } from "@/lib/supabase/admin";
 import { withClient } from "@/lib/supabase/server";
 import { backfill, enqueue, workQueue } from "@/lib/jobs";
@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
   ]);
   const users = [...new Set([...(waiting ?? []), ...(links ?? [])].map((r) => r.user_id))].slice(0, 5);
   const report: Record<string, unknown> = {};
-  await Promise.all(
+  const work = Promise.all(
     users.map(async (userId) => {
       try {
         const supabase = await clientForUser(userId);
@@ -48,7 +48,14 @@ export async function POST(req: NextRequest) {
       }
     }),
   );
-  return NextResponse.json({ users: users.length, report });
+  // Supabase's scheduler hangs up after a few seconds: answer straight away and keep working after the answer
+  // (up to the time limit), so each run does its full few minutes of processing. ?wait=1 waits and reports.
+  if (req.nextUrl.searchParams.get("wait") === "1") {
+    await work;
+    return NextResponse.json({ users: users.length, report });
+  }
+  after(() => work);
+  return NextResponse.json({ users: users.length, started: true });
 }
 
 // Vercel Cron (if you use it instead) calls with GET.
