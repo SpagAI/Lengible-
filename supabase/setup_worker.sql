@@ -20,9 +20,13 @@ select cron.schedule(
     url := 'https://YOUR-SITE/api/worker/tick',
     headers := jsonb_build_object('Authorization', 'Bearer YOUR-CRON-SECRET', 'Content-Type', 'application/json'),
     body := '{}'::jsonb,
-    timeout_milliseconds := 5000
+    timeout_milliseconds := 30000
   );
   $$
 );
 
 -- To stop it: select cron.unschedule('lengible-worker');
+
+-- If you set this up before (with a 5-second wait), this one line gives the scheduler 30 seconds instead,
+-- without retyping your site or secret:
+--   select cron.alter_job(jobid, command := replace(command, 'timeout_milliseconds := 5000', 'timeout_milliseconds := 30000')) from cron.job where jobname = 'lengible-worker';

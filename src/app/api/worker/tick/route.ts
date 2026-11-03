@@ -1,8 +1,5 @@
 import { after, NextResponse, type NextRequest } from "next/server";
 import { adminClient, clientForUser } from "@/lib/supabase/admin";
-import { withClient } from "@/lib/supabase/server";
-import { backfill, enqueue, workQueue } from "@/lib/jobs";
-import { checkDriveLinks } from "@/lib/drive-updates";
 
 // The background worker: Supabase calls this every minute (see supabase/setup_worker.sql), so files keep
 // being brought in and processed with Lengible closed. Each run works for up to ~4 minutes; runs overlap,
@@ -29,8 +26,12 @@ export async function POST(req: NextRequest) {
   ]);
   const users = [...new Set([...(waiting ?? []), ...(links ?? [])].map((r) => r.user_id))].slice(0, 5);
   const report: Record<string, unknown> = {};
+  // The processing code (PDF, Office and AI libraries) is loaded only now, after the quick checks above: loading
+  // it before answering made a cold start take longer than Supabase's scheduler waits.
+  const load = Promise.all([import("@/lib/supabase/server"), import("@/lib/jobs"), import("@/lib/drive-updates")]);
   const work = Promise.all(
     users.map(async (userId) => {
+      const [{ withClient }, { backfill, enqueue, workQueue }, { checkDriveLinks }] = await load;
       try {
         const supabase = await clientForUser(userId);
         report[userId] = await withClient(supabase as never, async () => {
