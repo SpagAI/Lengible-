@@ -108,3 +108,13 @@ body {
 :root[data-sidebar="collapsed"] .sidebar nav a,
 :root[data-sidebar="collapsed"] .sidebar nav span[aria-disabled] { justify-content: center; padding-left: 0; padding-right: 0; }
 :root[data-sidebar="collapsed"] .sidebar > div:last-child > div { flex-direction: column; }
+
+/* The bar at the top of the loading screen, sliding left to right. */
+@keyframes loading {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}

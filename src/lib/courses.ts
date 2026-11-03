@@ -1,5 +1,5 @@
 import "server-only";
-import type { SupabaseClient, User } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Course, CourseExam, Database, Lecturer } from "@/lib/supabase/types";
 import { defaultCourses, STRUCTURE_VERSION, type StarterCourse } from "@/modules/registry";
 import { daysUntil } from "@/lib/dates";
@@ -45,7 +45,7 @@ async function upgradeToV2(supabase: DB) {
 
 // On first sign-in, create the profile and the starting courses. Keyed on the profile row,
 // so deleting a course later won't bring it back.
-export async function ensureSeeded(supabase: DB, user: User): Promise<SeedResult> {
+export async function ensureSeeded(supabase: DB, user: { id: string }): Promise<SeedResult> {
   const { data: profile, error } = await supabase.from("profiles").select("id, structure_version").eq("id", user.id).maybeSingle();
   // The Phase 2 database update hasn't been run yet.
   if (error) return "needs_migration";

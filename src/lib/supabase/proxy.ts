@@ -26,8 +26,9 @@ export async function updateSession(request: NextRequest) {
     },
   });
 
-  const { data } = await supabase.auth.getUser();
-  if (!data.user && !isPublic) {
+  // Verifies the sign-in token here (and refreshes it when it's about to expire) without a trip to Supabase each time.
+  const { data } = await supabase.auth.getClaims();
+  if (!data?.claims?.sub && !isPublic) {
     const loginUrl = new URL("/login", request.url);
     return NextResponse.redirect(loginUrl);
   }

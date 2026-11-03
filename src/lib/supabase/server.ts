@@ -2,6 +2,7 @@ import "server-only";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { cache } from "react";
 import { createServerClient } from "@supabase/ssr";
 import type { Database } from "./types";
 import { supabaseEnv } from "./env";
@@ -35,9 +36,14 @@ export async function createClient() {
 }
 
 // Returns the signed-in user, or sends them to the login page.
-export async function requireUser() {
+// Checked once per page load (the layout and the page share it), and checked on this server from the sign-in
+// token's signature where possible, instead of asking Supabase's sign-in server over the internet every time.
+export const requireUser = cache(async () => {
   const supabase = await createClient();
-  const { data } = await supabase.auth.getUser();
-  if (!data.user) redirect("/login");
-  return { supabase, user: data.user };
-}
+  const { data } = await supabase.auth.getClaims();
+  const claims = data?.claims;
+  if (!claims?.sub) redirect("/login");
+  return { supabase, user: { id: claims.sub, email: typeof claims.email === "string" ? claims.email : undefined } as SignedInUser };
+});
+
+export type SignedInUser = { id: string; email?: string };

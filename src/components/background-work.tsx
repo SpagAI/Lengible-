@@ -133,6 +133,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [setupNeeded, setSetupNeeded] = useState(false);
   const [workerReady, setWorkerReady] = useState(true);
+  const workerReadyRef = useRef(false);
   const uploading = useRef(false);
   const wakeRef = useRef<() => void>(() => {});
 
@@ -147,6 +148,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
       setServer(r.jobs ?? []);
       setSummary(r.summary ? { ...r.summary, minsSince: r.summary.lastProgress ? Math.max(0, Math.round((Date.now() - Date.parse(r.summary.lastProgress)) / 60000)) : null } : null);
       setWorkerReady(r.worker ? !!r.worker.configured : true);
+      workerReadyRef.current = !!r.worker?.configured;
       setSetupNeeded(!!r.setup);
       return (r.jobs ?? []) as ServerJob[];
     } catch {
@@ -230,7 +232,9 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
     let stop = false;
     let kicking = false;
     const kick = async () => {
-      if (kicking) return;
+      // With the background worker set up, the server already works every minute: an open tab doesn't add
+      // its own runs (they competed with it and slowed the app down).
+      if (kicking || workerReadyRef.current) return;
       kicking = true;
       await post("/api/worker/kick");
       kicking = false;
@@ -238,15 +242,23 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
     (async () => {
       await sleep(1500);
       let lastActive = 0;
+      let lastRefresh = Date.now();
       while (!stop) {
+        // While Lengible is in the background (another app or tab), don't check: the server carries on by itself.
+        while (!stop && typeof document !== "undefined" && document.visibilityState === "hidden") await sleep(2000);
         const jobs = await refresh();
         const waiting = (jobs ?? []).filter((j) => j.state === "queued");
         const ready = waiting.filter((j) => !j.running && (!j.waitingUntil || new Date(j.waitingUntil).getTime() <= Date.now()));
         if (ready.length) void kick();
-        if (waiting.length < lastActive) router.refresh();
+        // Files finished: refresh the page you're on to show them, but at most once a minute (reloading the page
+        // more often made taps on buttons and links feel slow).
+        if (waiting.length < lastActive && Date.now() - lastRefresh > 60_000) {
+          lastRefresh = Date.now();
+          router.refresh();
+        }
         lastActive = waiting.length;
         await new Promise<void>((r) => {
-          const t = setTimeout(r, waiting.length ? 4000 : 30_000);
+          const t = setTimeout(r, waiting.length ? 8000 : 30_000);
           wakeRef.current = () => {
             clearTimeout(t);
             r();
