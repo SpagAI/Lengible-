@@ -113,7 +113,9 @@ async function callClaude(prompt: string, opts: GenerateOptions, model: string):
     { type: "text", text: prompt },
   ];
   // Current Claude models choose how much to think by themselves (effort sets how hard); sampling settings aren't used.
-  const response = await anthropicClient().beta.messages.create({
+  // Streamed and collected into one answer: the SDK refuses long answers (e.g. 32,000 tokens for a timetable or a
+  // past-question paper) on a plain request, because they may take longer than its 10-minute limit.
+  const response = await anthropicClient().beta.messages.stream({
     model,
     max_tokens: opts.maxOutputTokens ?? 16000,
     ...(opts.system ? { system: opts.system } : {}),
@@ -124,7 +126,7 @@ async function callClaude(prompt: string, opts: GenerateOptions, model: string):
     },
     // If Claude's safety checks decline a request, another Claude model answers instead.
     ...(/^claude-(opus-5|fable-5|sonnet-5-5)/.test(model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as never } : {}),
-  });
+  }).finalMessage();
   if (response.stop_reason === "refusal") throw new AIError("Claude declined this request. Try rephrasing it.", "bad_output");
   const text = response.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("");
   if (!text) throw new AIError("The AI returned an empty answer. Please try again.", "bad_output");

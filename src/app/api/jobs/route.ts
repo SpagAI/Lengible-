@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { enqueue, isStarted, jobPercent, type ProcessJob } from "@/lib/jobs";
 import { isMissingTable } from "@/lib/drugs";
 import { serviceKey } from "@/lib/supabase/admin";
+import { aiConfig, providerName } from "@/config/ai";
 
 // The processing queue: GET lists your jobs (running and recent), POST adds files or pauses/resumes/stops/retries.
 export async function GET() {
@@ -74,7 +75,7 @@ export async function GET() {
     };
   });
   // Whether the background worker can run (its settings are in Vercel). If not, files only move while Lengible is open.
-  const worker = { configured: !!(process.env.CRON_SECRET?.trim() && serviceKey()) };
+  const worker = { configured: !!(process.env.CRON_SECRET?.trim() && serviceKey()), ai: providerName[aiConfig.provider] };
   return NextResponse.json({ jobs, summary, worker });
 }
 

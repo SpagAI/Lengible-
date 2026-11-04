@@ -134,6 +134,8 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
   const [setupNeeded, setSetupNeeded] = useState(false);
   const [workerReady, setWorkerReady] = useState(true);
   const workerReadyRef = useRef(false);
+  // Which AI processes your files (named in the panel's messages about limits).
+  const [aiName, setAiName] = useState("Google");
   // Minutes since anything in the queue last moved.
   const quietRef = useRef<number | null>(null);
   const uploading = useRef(false);
@@ -151,6 +153,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
       setSummary(r.summary ? { ...r.summary, minsSince: r.summary.lastProgress ? Math.max(0, Math.round((Date.now() - Date.parse(r.summary.lastProgress)) / 60000)) : null } : null);
       setWorkerReady(r.worker ? !!r.worker.configured : true);
       workerReadyRef.current = !!r.worker?.configured;
+      if (r.worker?.ai) setAiName(r.worker.ai === "Gemini" ? "Google" : r.worker.ai);
       quietRef.current = r.summary?.lastProgress ? (Date.now() - Date.parse(r.summary.lastProgress)) / 60_000 : null;
       setSetupNeeded(!!r.setup);
       return (r.jobs ?? []) as ServerJob[];
@@ -313,6 +316,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
         server={server}
         summary={summary}
         workerReady={workerReady}
+        aiName={aiName}
         setupNeeded={setupNeeded}
         control={control}
         onClear={async () => {
@@ -393,6 +397,7 @@ function Dock({
   server,
   setupNeeded,
   workerReady,
+  aiName,
   summary,
   control,
   onClear,
@@ -401,6 +406,7 @@ function Dock({
   server: ServerJob[];
   setupNeeded: boolean;
   workerReady: boolean;
+  aiName: string;
   summary: Summary | null;
   control: (a: "pause" | "resume" | "stop" | "retry" | "remove" | "retry-waiting", ids?: string[]) => Promise<void>;
   onClear: () => void;
@@ -487,7 +493,7 @@ function Dock({
         onClick={() => minimise(false)}
         className={cx(position, "grid size-12 place-items-center rounded-full border border-border bg-surface shadow-lg")}
         aria-label="Show processing progress"
-        title={summary?.dailyUsedUp && summary.resumeAt ? `Google's daily AI allowance is used up · resumes ${when(summary.resumeAt)}` : `${nActive} processing · ${Math.round(overall)}%`}
+        title={summary?.dailyUsedUp && summary.resumeAt ? `${aiName}'s daily AI allowance is used up · resumes ${when(summary.resumeAt)}` : `${nActive} processing · ${Math.round(overall)}%`}
       >
         <svg viewBox="0 0 36 36" className="absolute inset-1 -rotate-90" aria-hidden="true">
           <circle cx="18" cy="18" r="15.5" fill="none" stroke="var(--color-surface-2)" strokeWidth="3" />
@@ -532,7 +538,7 @@ function Dock({
                 ? `${nFailed} need${nFailed === 1 ? "s" : ""} attention`
                 : "Processing finished"}
           <span className="block text-[11px] font-normal text-muted">
-            {summary ? `${summary.done} done${summary.waitingAi ? ` · ${summary.waitingAi} waiting for Google's AI limit` : ""}${nWaiting - (summary.waitingAi ?? 0) > 0 ? ` · ${nWaiting - (summary.waitingAi ?? 0)} waiting after a problem` : ""}${nFailed ? ` · ${nFailed} failed` : ""} · ` : ""}{workerReady ? "on the server, keeps going with Lengible closed" : "moves only while Lengible is open"}
+            {summary ? `${summary.done} done${summary.waitingAi ? ` · ${summary.waitingAi} waiting for ${aiName}'s AI limit` : ""}${nWaiting - (summary.waitingAi ?? 0) > 0 ? ` · ${nWaiting - (summary.waitingAi ?? 0)} waiting after a problem` : ""}${nFailed ? ` · ${nFailed} failed` : ""} · ` : ""}{workerReady ? "on the server, keeps going with Lengible closed" : "moves only while Lengible is open"}
           </span>
         </span>
         {(summary?.total ?? server.length) > 0 && <ProgressPct pct={overall} label="All files in the queue" />}
@@ -577,7 +583,7 @@ function Dock({
         <p className="border-b border-border px-3 py-1.5 text-[11px] text-muted">
           Done in the last 24 h: {summary.doneToday ?? 0}
           {summary.minsSince != null ? ` · last progress ${ago(summary.minsSince)}` : ""}
-          {summary.waitingAi ? ` · ${summary.waitingAi} waiting for Google's AI limit to reset` : ""}
+          {summary.waitingAi ? ` · ${summary.waitingAi} waiting for ${aiName}'s AI limit to reset` : ""}
         </p>
       )}
       {summary && (summary.waitingAi ?? 0) > 0 && (
@@ -585,12 +591,14 @@ function Dock({
           {summary.dailyUsedUp ? (
             <>
               <strong className="block">
-                Google&apos;s free daily AI allowance is used up.{summary.resumeAt ? ` Processing resumes automatically on ${when(summary.resumeAt)}.` : ""}
+                {aiName}&apos;s daily AI allowance is used up.{summary.resumeAt ? ` Processing resumes automatically on ${when(summary.resumeAt)}.` : ""}
               </strong>
               It carries on by itself in the background, even with Lengible closed. A paid Gemini tier (billing on your API key&apos;s project) removes this limit.
             </>
           ) : (
-            "Google is limiting how much AI work your key can do right now, so files wait and retry on their own. A paid Gemini tier (billing on your API key's project) removes most of this."
+            aiName === "Google"
+              ? "Google is limiting how much AI work your key can do right now, so files wait and retry on their own. A paid Gemini tier (billing on your API key's project) removes most of this."
+              : `${aiName} is limiting how much AI work your key can do right now, so files wait and retry on their own. Limits rise as your API account moves up a usage tier.`
           )}
         </p>
       )}
@@ -654,7 +662,7 @@ function Dock({
                               ? `Stopped at “${STEP_TEXT[j.step] ?? j.step}”`
                               : j.waitingUntil
                                 ? /daily AI allowance/i.test(j.note ?? "")
-                                  ? `Google's daily AI allowance is used up. Resumes automatically on ${when(j.waitingUntil)}.`
+                                  ? `${aiName}'s daily AI allowance is used up. Resumes automatically on ${when(j.waitingUntil)}.`
                                   : j.note ?? "Waiting to carry on"
                                 : j.running
                                   ? `${STEP_TEXT[j.step] ?? j.step}${j.total ? ` · ${j.done ?? 0} of ${j.total}` : ""}`
