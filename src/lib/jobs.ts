@@ -593,6 +593,9 @@ async function advance(supabase: DB, job: ProcessJob, deadline: number): Promise
         throw e;
       }
       const updated = (await loadFile(supabase, file.id))!;
+      // A past-question paper is readable and searchable now: it counts as in your Library while its questions
+      // are copied into the question bank (which takes a while for compilations of hundreds of pages).
+      if (needsQuestions(updated) && job.drive_item_id) await markDriveItemDone(supabase, job.drive_item_id);
       return { next: needsQuestions(updated) ? "questions" : "embed" };
     }
 

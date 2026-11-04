@@ -166,44 +166,58 @@ function questionBatch<T extends { content: string }>(pages: T[], at: number) {
   return out;
 }
 
-// Pulls every question out of a past-question file, a few pages per AI call (the place is saved after each),
+const PARALLEL_CALLS = 3;
+
+async function readQuestions(file: LibraryFile, batch: { page: number; content: string }[]) {
+  const p = file.profile;
+  const r = await generateJSON<{
+    questions: { page: number; number: string; question: string; format: ExamQuestion["format"]; marks: number; topic: string; exam: string; exam_year: number; set: string }[];
+  }>(
+    `These are pages ${batch[0].page}–${batch.at(-1)!.page} of "${file.name}", ${p?.exam ? `a ${p.exam.toUpperCase()} ` : "a "}past-question paper` +
+      `${p?.exam_year ? ` (${p.exam_year})` : ""}${p?.set ? `, set ${p.set}` : ""}${p?.course ? `, ${p.course}` : ""}.\n` +
+      "List every exam question on them. Keep each question's full wording; keep essay sub-parts together with their question. " +
+      "Skip instructions, headers and answer keys.\n\n" +
+      batch.map((b) => `--- Page ${b.page} ---\n${b.content}`).join("\n\n"),
+    questionsSchema,
+    { system: "You extract exam questions from Nigerian medical school past papers, exactly as written.", temperature: 0, maxOutputTokens: 32_000 },
+  );
+  return (r.questions ?? [])
+    .filter((q) => q.question?.trim().length > 8)
+    .map((q) => ({
+      file_id: file.id,
+      course_id: file.course_id,
+      page: q.page || batch[0].page,
+      exam: (q.exam && q.exam !== "same" ? q.exam : p?.exam ?? "other") as PaperKind,
+      class_set: findSet(q.set) ?? p?.set ?? null,
+      exam_year: q.exam_year > 1980 ? q.exam_year : p?.exam_year ?? null,
+      format: q.format ?? "other",
+      number: q.number || null,
+      question: q.question.trim(),
+      marks: q.marks > 0 ? q.marks : null,
+      topic: q.topic || null,
+    }));
+}
+
+// Pulls every question out of a past-question file, a few pages per AI call (the place is saved as it goes),
 // and groups each one with the same question asked in other years (by meaning when possible).
 export async function questionsStep(supabase: DB, file: LibraryFile, cursor: number, deadline: number): Promise<{ finished: boolean; cursor: number; total: number }> {
   const { data: pages } = await supabase.from("chunks").select("page, content").eq("file_id", file.id).order("page");
   const all = pages ?? [];
-  const p = file.profile;
   let at = cursor;
   if (at === 0) await supabase.from("exam_questions").delete().eq("file_id", file.id);
-  while (at < all.length && Date.now() < deadline - 45_000) {
-    const batch = questionBatch(all, at);
-    const r = await generateJSON<{
-      questions: { page: number; number: string; question: string; format: ExamQuestion["format"]; marks: number; topic: string; exam: string; exam_year: number; set: string }[];
-    }>(
-      `These are pages ${batch[0].page}–${batch.at(-1)!.page} of "${file.name}", ${p?.exam ? `a ${p.exam.toUpperCase()} ` : "a "}past-question paper` +
-        `${p?.exam_year ? ` (${p.exam_year})` : ""}${p?.set ? `, set ${p.set}` : ""}${p?.course ? `, ${p.course}` : ""}.\n` +
-        "List every exam question on them. Keep each question's full wording; keep essay sub-parts together with their question. " +
-        "Skip instructions, headers and answer keys.\n\n" +
-        batch.map((b) => `--- Page ${b.page} ---\n${b.content}`).join("\n\n"),
-      questionsSchema,
-      { system: "You extract exam questions from Nigerian medical school past papers, exactly as written.", temperature: 0, maxOutputTokens: 32_000 },
-    );
-    const rows = (r.questions ?? [])
-      .filter((q) => q.question?.trim().length > 8)
-      .map((q) => ({
-        file_id: file.id,
-        course_id: file.course_id,
-        page: q.page || batch[0].page,
-        exam: (q.exam && q.exam !== "same" ? q.exam : p?.exam ?? "other") as PaperKind,
-        class_set: findSet(q.set) ?? p?.set ?? null,
-        exam_year: q.exam_year > 1980 ? q.exam_year : p?.exam_year ?? null,
-        format: q.format ?? "other",
-        number: q.number || null,
-        question: q.question.trim(),
-        marks: q.marks > 0 ? q.marks : null,
-        topic: q.topic || null,
-      }));
+  // Up to 3 groups of pages are read at the same time (big compilations have hundreds of pages); their
+  // questions are saved together once all of them are back, so a retry never saves any twice.
+  while (at < all.length && Date.now() < deadline - 60_000) {
+    const batches: (typeof all)[] = [];
+    for (let k = at; k < all.length && batches.length < PARALLEL_CALLS; ) {
+      const batch = questionBatch(all, k);
+      batches.push(batch);
+      k += batch.length;
+    }
+    const found = await Promise.all(batches.map((batch) => readQuestions(file, batch)));
+    const rows = found.flat();
     if (rows.length) await saveWithClusters(supabase, rows);
-    at += batch.length;
+    at += batches.reduce((n, b) => n + b.length, 0);
   }
   return { finished: at >= all.length, cursor: at, total: all.length };
 }

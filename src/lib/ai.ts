@@ -146,6 +146,9 @@ async function callOpenAI(prompt: string, opts: GenerateOptions, model: string):
     model,
     messages: [...(opts.system ? [{ role: "system" as const, content: opts.system }] : []), { role: "user", content: parts }],
     ...(opts.maxOutputTokens ? { max_completion_tokens: opts.maxOutputTokens } : {}),
+    // Reasoning models (gpt-5 family, o-series) think before answering; for reading and sorting files a little
+    // thinking is enough and much faster. OPENAI_REASONING_EFFORT overrides (minimal | low | medium | high).
+    ...(/^(gpt-5|o\d)/.test(model) ? { reasoning_effort: (process.env.OPENAI_REASONING_EFFORT || "low") as "low" } : {}),
     ...(opts.schema ? { response_format: { type: "json_schema" as const, json_schema: { name: "output", schema: closeObjects(opts.schema) as Record<string, unknown>, strict: false } } } : {}),
   });
   const text = response.choices[0]?.message?.content;
