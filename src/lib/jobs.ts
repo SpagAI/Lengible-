@@ -155,9 +155,25 @@ export async function enqueue(
     // Revive a stopped or paused job for the same file instead of adding a second one.
     const existing = await findOpenJob(supabase, fileId, it.driveItemId ?? null);
     if (existing) {
+      // Already waiting or being worked on: leave it exactly as it is (its place in the queue, its started
+      // place among the 3, and any wait). Re-queuing it used to send files in progress back to the end of the
+      // queue every time Drive was checked or "Bring in & process" was pressed, so big files never finished.
+      if (existing.state === "queued" && !it.again) {
+        skipped++;
+        continue;
+      }
+      // A newer version starts again from the beginning; a paused or stopped file carries on where it was.
       await supabase
         .from("process_jobs")
-        .update({ state: "queued", attempts: 0, error: null, note: null, not_before: null, priority: it.priority ?? sizeOrder(size), updated_at: new Date().toISOString(), ...(it.again ? { step, progress: {} } : {}) })
+        .update({
+          state: "queued",
+          attempts: 0,
+          error: null,
+          note: null,
+          not_before: null,
+          updated_at: new Date().toISOString(),
+          ...(it.again ? { step, progress: {}, priority: it.priority ?? sizeOrder(size) } : {}),
+        })
         .eq("id", existing.id);
       added++;
       continue;
@@ -176,7 +192,7 @@ export async function enqueue(
 
 async function findOpenJob(supabase: DB, fileId: string | null, driveItemId: string | null) {
   if (!fileId && !driveItemId) return null;
-  let q = supabase.from("process_jobs").select("id").in("state", ["queued", "paused", "stopped"]);
+  let q = supabase.from("process_jobs").select("id, state").in("state", ["queued", "paused", "stopped"]);
   q = fileId ? q.eq("file_id", fileId) : q.eq("drive_item_id", driveItemId!);
   const { data } = await q.limit(1);
   return data?.[0] ?? null;
