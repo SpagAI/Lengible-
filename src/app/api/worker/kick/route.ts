@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { backfill, workQueue } from "@/lib/jobs";
+import { indexMissing } from "@/lib/embed";
 
 // Per warm server: the catch-up scan (files part-processed earlier) runs at most every 10 minutes.
 const lastScan = new Map<string, number>();
@@ -18,6 +19,8 @@ export async function POST() {
     lastScan.set(auth.user.id, Date.now());
     queued = (await backfill(supabase).catch(() => ({ added: 0 }))).added;
   }
-  const r = await workQueue(supabase, auth.user.id, Date.now() + 105_000);
-  return NextResponse.json({ ...r, queued });
+  const deadline = Date.now() + 105_000;
+  const r = await workQueue(supabase, auth.user.id, deadline);
+  const indexed = await indexMissing(supabase, deadline).catch(() => 0);
+  return NextResponse.json({ ...r, queued, indexed });
 }

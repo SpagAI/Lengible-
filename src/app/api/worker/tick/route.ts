@@ -24,7 +24,9 @@ export async function POST(req: NextRequest) {
     admin.from("process_jobs").select("user_id").eq("state", "queued").or(`not_before.is.null,not_before.lt.${now}`).limit(500),
     admin.from("drive_sources").select("user_id").is("removed_at", null).eq("auto_import", true).or(`last_checked_at.is.null,last_checked_at.lt.${dueBefore}`).limit(100),
   ]);
-  const users = [...new Set([...(waiting ?? []), ...(links ?? [])].map((r) => r.user_id))].slice(0, 5);
+  // Pages still to be indexed for search by meaning (done in the background, also once the queue is empty).
+  const { data: unindexed } = await admin.from("chunks").select("user_id").is("embedding", null).limit(50);
+  const users = [...new Set([...(waiting ?? []), ...(links ?? []), ...(unindexed ?? [])].map((r) => r.user_id))].slice(0, 5);
   const report: Record<string, unknown> = {};
   // The processing code (PDF, Office and AI libraries) is loaded only now, after the quick checks above: loading
   // it before answering made a cold start take longer than Supabase's scheduler waits.
@@ -42,7 +44,10 @@ export async function POST(req: NextRequest) {
             if (r.items.length) queued += (await enqueue(supabase, r.items.map((i) => ({ driveItemId: i.id, name: i.changed ? `${i.name} (newer version)` : i.name, again: i.changed })))).added;
             queued += (await backfill(supabase)).added;
           }
-          return { queued, ...(await workQueue(supabase, userId, deadline)) };
+          const worked = await workQueue(supabase, userId, deadline);
+          // Time left over: index pages for search by meaning in the background.
+          const indexed = await (await import("@/lib/embed")).indexMissing(supabase, deadline).catch(() => 0);
+          return { queued, ...worked, indexed };
         });
       } catch (e) {
         report[userId] = { error: e instanceof Error ? e.message : "failed" };

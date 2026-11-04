@@ -78,8 +78,7 @@ export async function firstStepFor(supabase: DB, file: LibraryFile | null): Prom
   if (!analysed) return "analyse";
   if (!file.profile) return "profile";
   if (needsQuestions(file) && !(await hasQuestions(supabase, file.id))) return "questions";
-  const { count } = await supabase.from("chunks").select("id", { count: "exact", head: true }).eq("file_id", file.id).is("embedding", null);
-  if (count) return "embed";
+  // Search-by-meaning indexing isn't needed for a file to be done: missing pages are indexed in the background.
   return "done";
 }
 
@@ -214,11 +213,18 @@ export const MAX_OPEN = 3;
 // A started file's priority is lifted by this much, so it stays ahead of files that haven't started.
 export const STARTED = 1_000_000_000;
 export const isStarted = (priority: number) => priority >= STARTED / 2;
-// Files only waiting for search indexing go behind every file still to be processed (and don't hold a place).
+// Files that used to wait in the queue only for search indexing (that now happens in the background).
 const INDEX_LATER = -STARTED / 4;
 
 export async function workQueue(supabase: DB, userId: string, deadline: number, parallel = MAX_OPEN) {
   await orderBySize(supabase).catch(() => {});
+  // Files left waiting at 90% only for search indexing are finished: indexing carries on in the background.
+  await supabase
+    .from("process_jobs")
+    .update({ state: "done", step: "done", note: null, not_before: null, locked_until: null, finished_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .eq("state", "queued")
+    .eq("step", "embed")
+    .lt("priority", INDEX_LATER / 2);
   const done: string[] = [];
   const running = new Set<Promise<void>>();
   const take = async (j: ProcessJob, now: string) => {
@@ -620,19 +626,10 @@ async function advance(supabase: DB, job: ProcessJob, deadline: number): Promise
         const r = await embedStep(supabase, file, deadline);
         if (!r.finished) return { progress: { done: r.done, total: r.total } };
       } catch (e) {
-        // Google's limit for indexing was reached. The file is already usable (readable, searchable by words,
-        // questions saved), so it counts as in your Library now and gives up its place to the next file;
-        // search-by-meaning indexing is finished later, after the files still waiting.
-        if (e instanceof AIError && (e.kind === "rate_limit" || e.kind === "busy")) {
-          if (job.drive_item_id) await markDriveItemDone(supabase, job.drive_item_id);
-          return {
-            wait: {
-              ms: isDailyMessage(e.message) ? msUntilDailyReset() : 75_000,
-              note: "Ready to use. Google's limit for search indexing was reached, so search by meaning is added later, after the other files.",
-            },
-            patch: { priority: INDEX_LATER },
-          };
-        }
+        // The AI's limit for indexing was reached. The file is already fully usable (readable, searchable by
+        // words, questions saved): it's finished now, and search-by-meaning indexing of its remaining pages
+        // carries on in the background (indexMissing), without holding the file at 90%.
+        if (e instanceof AIError && (e.kind === "rate_limit" || e.kind === "busy")) return { finished: true };
         throw e;
       }
       return { finished: true };
