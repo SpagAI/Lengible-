@@ -393,6 +393,8 @@ function limitWait(message: string, busy = false): Outcome {
     // The panel shows the exact date and time (in your own time zone) from not_before.
     return { wait: { ms: msUntilDailyReset(), note: "Google's daily AI allowance is used up. Resumes automatically when it resets, even with Lengible closed." } };
   }
+  // No API credit: checking again every half hour is enough.
+  if (/has no credit left/.test(message)) return { wait: { ms: 30 * 60_000, note: `${message.split(".")[0]}. Add credit; files carry on by themselves.` } };
   return { wait: { ms: busy ? 2 * 60_000 : 90_000, note: `${message.split(".")[0]}. Waiting, then carrying on.` } };
 }
 

@@ -33,7 +33,7 @@ export async function GET() {
       if (j.state === "queued" && j.not_before && new Date(j.not_before).getTime() > Date.now() && !/^Same file as/.test(j.note ?? "")) {
         summary.waiting++;
         // Waiting for Google's AI limit (per minute or per day), not a problem with the file.
-        if (/limit|allowance|overloaded|busy/i.test(j.note ?? "")) summary.waitingAi++;
+        if (/limit|allowance|overloaded|busy|credit/i.test(j.note ?? "")) summary.waitingAi++;
         if (/daily AI allowance/i.test(j.note ?? "")) {
           summary.dailyUsedUp = true;
           // When processing picks up again after the daily reset.

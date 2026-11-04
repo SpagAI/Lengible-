@@ -180,6 +180,13 @@ async function tryModel(choice: ModelChoice, model: string, prompt: string, opts
   }
 }
 
+// OpenAI answers 429 "insufficient_quota" when the account has no prepaid API credit (not a rate limit).
+function noCredit(provider: Provider, err: unknown) {
+  if (provider !== "openai") return false;
+  const code = (err as { code?: string }).code;
+  return code === "insufficient_quota" || /insufficient_quota|check your plan and billing/i.test(err instanceof Error ? err.message : "");
+}
+
 // Models whose daily allowance is used up, and until when (so they're skipped instead of asked again).
 const exhausted = new Map<string, number>();
 
@@ -204,6 +211,12 @@ async function callWithRetry(prompt: string, opts: GenerateOptions): Promise<str
       err = e;
       if (e instanceof AIError) throw e;
       const status = statusOf(e);
+      if (status === 429 && noCredit(choice.provider, e)) {
+        throw new AIError(
+          `Your ${providerName[choice.provider]} API account has no credit left. Add credit in its billing page (for ChatGPT: platform.openai.com → Billing); files carry on by themselves once it's added.`,
+          "rate_limit",
+        );
+      }
       if (status === 429) {
         limited++;
         if (isDailyLimit(e)) {
