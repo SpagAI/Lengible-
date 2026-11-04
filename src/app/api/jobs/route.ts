@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { enqueue, isStarted, jobPercent, type ProcessJob } from "@/lib/jobs";
+import { enqueue, isStarted, jobPercent, MAX_OPEN, type ProcessJob } from "@/lib/jobs";
 import { isMissingTable } from "@/lib/drugs";
 import { serviceKey } from "@/lib/supabase/admin";
 import { aiConfig, providerName } from "@/config/ai";
@@ -75,7 +75,7 @@ export async function GET() {
     };
   });
   // Whether the background worker can run (its settings are in Vercel). If not, files only move while Lengible is open.
-  const worker = { configured: !!(process.env.CRON_SECRET?.trim() && serviceKey()), ai: providerName[aiConfig.provider], model: aiConfig.model };
+  const worker = { configured: !!(process.env.CRON_SECRET?.trim() && serviceKey()), ai: providerName[aiConfig.provider], model: aiConfig.model, atOnce: MAX_OPEN };
   return NextResponse.json({ jobs, summary, worker });
 }
 

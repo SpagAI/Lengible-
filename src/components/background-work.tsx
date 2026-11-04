@@ -138,6 +138,8 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
   const [aiName, setAiName] = useState("Google");
   // e.g. "ChatGPT (gpt-5)": shown in the panel so you can see which AI is reading your files.
   const [aiUsed, setAiUsed] = useState("");
+  // How many files the server works on at the same time (PROCESS_FILES_AT_ONCE).
+  const [atOnce, setAtOnce] = useState(3);
   // Minutes since anything in the queue last moved.
   const quietRef = useRef<number | null>(null);
   const uploading = useRef(false);
@@ -156,6 +158,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
       setWorkerReady(r.worker ? !!r.worker.configured : true);
       workerReadyRef.current = !!r.worker?.configured;
       if (r.worker?.ai) setAiName(r.worker.ai === "Gemini" ? "Google" : r.worker.ai);
+      if (r.worker?.atOnce) setAtOnce(r.worker.atOnce);
       if (r.worker?.ai) setAiUsed(`${r.worker.ai}${r.worker.model ? ` (${r.worker.model})` : ""}`);
       quietRef.current = r.summary?.lastProgress ? (Date.now() - Date.parse(r.summary.lastProgress)) / 60_000 : null;
       setSetupNeeded(!!r.setup);
@@ -321,6 +324,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
         workerReady={workerReady}
         aiName={aiName}
         aiUsed={aiUsed}
+        atOnce={atOnce}
         setupNeeded={setupNeeded}
         control={control}
         onClear={async () => {
@@ -403,6 +407,7 @@ function Dock({
   workerReady,
   aiName,
   aiUsed,
+  atOnce,
   summary,
   control,
   onClear,
@@ -413,6 +418,7 @@ function Dock({
   workerReady: boolean;
   aiName: string;
   aiUsed: string;
+  atOnce: number;
   summary: Summary | null;
   control: (a: "pause" | "resume" | "stop" | "retry" | "remove" | "retry-waiting", ids?: string[]) => Promise<void>;
   onClear: () => void;
@@ -676,7 +682,7 @@ function Dock({
                                     ? `Carrying on with “${STEP_TEXT[j.step] ?? j.step}”`
                                     : j.step === "embed"
                                       ? "Ready to use. Search by meaning is added after the other files."
-                                      : "Waiting its turn (3 files at a time, smallest first)"}
+                                      : `Waiting its turn (${atOnce} files at a time, smallest first)`}
                     </span>
                   </span>
                 </button>

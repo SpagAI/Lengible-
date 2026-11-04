@@ -209,7 +209,8 @@ const iso = (ms: number) => new Date(ms).toISOString();
 // At most 3 files are worked on at once. A file that has started keeps its place until it's finished (even
 // while it waits for a time limit or the AI allowance, carrying on where it stopped); a new file, smallest
 // first, starts only when one of the three finishes, fails, or you pause or stop it.
-export const MAX_OPEN = 3;
+// PROCESS_FILES_AT_ONCE (1–10) raises it on a paid AI plan, where limits allow more at the same time.
+export const MAX_OPEN = Math.min(10, Math.max(1, Number(process.env.PROCESS_FILES_AT_ONCE) || 3));
 // A started file's priority is lifted by this much, so it stays ahead of files that haven't started.
 export const STARTED = 1_000_000_000;
 export const isStarted = (priority: number) => priority >= STARTED / 2;
@@ -526,9 +527,8 @@ async function advance(supabase: DB, job: ProcessJob, deadline: number): Promise
       const isImage = (file.mime_type ?? "").startsWith("image/");
       const { PDFDocument } = await import("pdf-lib");
       const source = isImage ? null : await PDFDocument.load(buf, { ignoreEncryption: true });
-      // A few pages per AI call; the place is saved after each call.
-      while (done < list.length && Date.now() < deadline - 40_000) {
-        const pages = isImage ? [1] : list.slice(done, done + 6);
+      // A few pages per AI call, up to 3 calls at the same time; the place is saved after each round.
+      const readPages = async (pages: number[]) => {
         // Each call: these pages only (a small PDF cut from the file), or the picture itself.
         let data: { mimeType: string; data: string };
         if (isImage) data = { mimeType: file.mime_type!, data: buf.toString("base64") };
@@ -538,31 +538,37 @@ async function advance(supabase: DB, job: ProcessJob, deadline: number): Promise
           copied.forEach((p) => part.addPage(p));
           data = { mimeType: "application/pdf", data: Buffer.from(await part.save()).toString("base64") };
         }
+        const r = await generateJSON<{ pages: { page: number; text: string }[] }>(
+          `These are pages ${pages.join(", ")} (in that order) of "${file.name}", a medical student's ${file.doc_type.replace("_", " ")}${isImage ? " (a photo or picture)" : ""}.\n` +
+            "For each page, write down all readable text (keep headings, lists and table rows). Then, for any picture, diagram, chart, " +
+            "micrograph, specimen or film on it, add a line starting with 'Image:' describing what it shows in exam-useful terms " +
+            "(what it is, the labelled or key features, and what it illustrates). Don't guess beyond what is visible.",
+          {
+            type: "object",
+            properties: { pages: { type: "array", items: { type: "object", properties: { page: { type: "integer" }, text: { type: "string" } }, required: ["page", "text"] } } },
+            required: ["pages"],
+          },
+          { file: data, maxOutputTokens: 12_000, temperature: 0 },
+        );
+        const wanted = new Set(pages);
+        const rows = (r.pages ?? [])
+          .filter((p) => wanted.has(p.page) && p.text?.trim())
+          .map((p) => ({ file_id: file.id, course_id: file.course_id, page: p.page, content: p.text.trim().slice(0, 20000) }));
+        // Replacing these pages only, so reading them again (after a retry) never doubles them.
+        await supabase.from("chunks").delete().eq("file_id", file.id).in("page", [...wanted]);
+        if (rows.length) await supabase.from("chunks").insert(rows);
+      };
+      while (done < list.length && Date.now() < deadline - 40_000) {
+        const groups: number[][] = [];
+        for (let k = done; k < list.length && groups.length < (isImage ? 1 : 3); k += 6) groups.push(isImage ? [1] : list.slice(k, k + 6));
         try {
-          const r = await generateJSON<{ pages: { page: number; text: string }[] }>(
-            `These are pages ${pages.join(", ")} (in that order) of "${file.name}", a medical student's ${file.doc_type.replace("_", " ")}${isImage ? " (a photo or picture)" : ""}.\n` +
-              "For each page, write down all readable text (keep headings, lists and table rows). Then, for any picture, diagram, chart, " +
-              "micrograph, specimen or film on it, add a line starting with 'Image:' describing what it shows in exam-useful terms " +
-              "(what it is, the labelled or key features, and what it illustrates). Don't guess beyond what is visible.",
-            {
-              type: "object",
-              properties: { pages: { type: "array", items: { type: "object", properties: { page: { type: "integer" }, text: { type: "string" } }, required: ["page", "text"] } } },
-              required: ["pages"],
-            },
-            { file: data, maxOutputTokens: 12_000, temperature: 0 },
-          );
-          const wanted = new Set(pages);
-          const rows = (r.pages ?? [])
-            .filter((p) => wanted.has(p.page) && p.text?.trim())
-            .map((p) => ({ file_id: file.id, course_id: file.course_id, page: p.page, content: p.text.trim().slice(0, 20000) }));
-          await supabase.from("chunks").delete().eq("file_id", file.id).in("page", [...wanted]);
-          if (rows.length) await supabase.from("chunks").insert(rows);
+          await Promise.all(groups.map(readPages));
         } catch (e) {
           const w = aiWait(e);
           if (w) return { ...w, progress: { ...job.progress, done } };
           throw e;
         }
-        done += pages.length;
+        done += groups.reduce((n, g) => n + g.length, 0);
         await supabase.from("process_jobs").update({ progress: { ...job.progress, done }, locked_until: iso(Date.now() + LOCK_MS), updated_at: new Date().toISOString() }).eq("id", job.id);
       }
       if (done < list.length) return { progress: { ...job.progress, done } };
