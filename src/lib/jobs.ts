@@ -214,6 +214,8 @@ export const MAX_OPEN = Math.min(10, Math.max(1, Number(process.env.PROCESS_FILE
 // A started file's priority is lifted by this much, so it stays ahead of files that haven't started.
 export const STARTED = 1_000_000_000;
 export const isStarted = (priority: number) => priority >= STARTED / 2;
+// A "big" file, in KB (its queue priority is minus its size in KB).
+const BIG_KB = 10 * 1024;
 // Files that used to wait in the queue only for search indexing (that now happens in the background).
 const INDEX_LATER = -STARTED / 4;
 
@@ -257,17 +259,24 @@ export async function workQueue(supabase: DB, userId: string, deadline: number, 
     }
     // A free place: start the next file (smallest first).
     if ((open ?? []).length >= MAX_OPEN) return null;
-    const { data: next } = await supabase
-      .from("process_jobs")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("state", "queued")
-      .lt("priority", STARTED / 2)
-      .or(`not_before.is.null,not_before.lt.${now}`)
-      .or(`locked_until.is.null,locked_until.lt.${now}`)
-      .order("priority", { ascending: false })
-      .order("created_at")
-      .limit(6);
+    // Big files (over 10 MB) take at most half the places, so small files keep finishing alongside them;
+    // when only big files are left, they use every place.
+    const bigOpen = ((open ?? []) as ProcessJob[]).filter((j) => j.priority < STARTED - BIG_KB).length;
+    const nextQuery = (smallOnly: boolean) => {
+      let q = supabase
+        .from("process_jobs")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("state", "queued")
+        .lt("priority", STARTED / 2)
+        .or(`not_before.is.null,not_before.lt.${now}`)
+        .or(`locked_until.is.null,locked_until.lt.${now}`);
+      if (smallOnly) q = q.gte("priority", -BIG_KB);
+      return q.order("priority", { ascending: false }).order("created_at").limit(6);
+    };
+    const capped = bigOpen >= Math.max(1, Math.floor(MAX_OPEN / 2));
+    let { data: next } = await nextQuery(capped);
+    if (capped && !next?.length) ({ data: next } = await nextQuery(false));
     for (const j of (next ?? []) as ProcessJob[]) {
       const got = await take(j, now);
       if (!got) continue;

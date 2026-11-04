@@ -9,6 +9,8 @@ type DB = SupabaseClient<Database>;
 
 // One AI call reads about this many characters (roughly 40–60 slides), so big files go in several steps.
 const BATCH_CHARS = 60_000;
+// Groups of pages read at the same time for big files.
+const PARALLEL_BATCHES = 3;
 // Bumped when the reading changes, so files read the old way are read again (in the background).
 export const ANALYSIS_VERSION = 2;
 // Only one device reads a file at a time; a step that dies leaves the file free again after this.
@@ -200,6 +202,13 @@ export async function saveConcepts(supabase: DB, fileId: string, found: FoundCon
   if (links.length) await supabase.from("file_concepts").insert(links);
 }
 
+// "Iron deficiency anaemia" and "Iron Deficiency Anaemia (contd.)" are the same lecture carrying on.
+function sameTopic(a: string, b: string) {
+  const norm = (t: string) => t.toLowerCase().replace(/\((cont(d|inued)?\.?|part \d+)\)|\b(cont(d|inued)?|part \d+)\b\.?/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+  const x = norm(a), y = norm(b);
+  return x === y || (x.length > 8 && y.length > 8 && (x.includes(y) || y.includes(x)));
+}
+
 // Adds one batch's sections, joining a section that carries on from the previous batch.
 function mergeSections(into: Section[], found: Section[]) {
   for (const raw of found) {
@@ -215,7 +224,7 @@ function mergeSections(into: Section[], found: Section[]) {
       matches: raw.matches?.trim() || null,
     };
     const last = into.at(-1);
-    if (last && last.title.toLowerCase() === sec.title.toLowerCase()) {
+    if (last && sameTopic(last.title, sec.title)) {
       last.end_page = Math.max(last.end_page, sec.end_page);
       last.subtopics = [...new Set([...last.subtopics, ...sec.subtopics])].slice(0, 12);
       last.key_points = [...new Set([...last.key_points, ...sec.key_points])].slice(0, 10);
@@ -310,6 +319,8 @@ export async function analyzeStep(supabase: DB, file: LibraryFile, full = false)
   state.lockUntil = null;
 
   const batch = await nextBatch(supabase, file.id, state.cursor);
+  // The last page read in this step (several groups of pages for big files).
+  let readUpTo: number | null = null;
   if (batch.length) {
     const text = pagesText(batch);
     try {
@@ -344,32 +355,53 @@ export async function analyzeStep(supabase: DB, file: LibraryFile, full = false)
         // The first call also says what the file is (saves a separate AI call per file).
         const first = state.cursor === 0;
         const ctx = first ? await fileContext(supabase, file) : null;
-        const schema = first
-          ? { ...conceptSchema, properties: { ...conceptSchema.properties, file_profile: profileSchema }, required: [...conceptSchema.required, "file_profile"] }
-          : conceptSchema;
-        const r = await generateJSON<{ sections: Section[]; concepts: FoundConcept[]; file_profile?: Analysis["profileGuess"] }>(
-          (ctx ? `File name: ${ctx.name}\nWhere it is: ${ctx.where || "(top level)"}\n` : "") +
-          `These are pages ${batch[0].page}–${batch[batch.length - 1].page} of "${file.name}" (${state.totalPages} pages in all), a medical student's ` +
-            `${file.doc_type.replace("_", " ")} for ${fileCourse && !fileCourse.is_group ? fileCourse.name : "one of these courses: " + courseNames.join("; ")}.\n` +
-            "1. Split the pages into sections, one per lecture or topic. A slide deck on one topic is ONE section; a compilation of lectures " +
-            "has one section per lecture. Give each a concise topic name as a syllabus would list it (not 'Lecture 4' or a slide title), " +
-            "its first and last page, its main headings (subtopics) and the most exam-worthy facts actually stated on those pages (key_points)." +
-            (last ? ` The previous pages ended in the section "${last.title}"; if these pages carry on with it, use exactly that title.` : "") +
-            (topics?.length ? `\nExisting syllabus topics (set matches to one of these, copied exactly, when a section is about it):\n${topics.map((t) => t.name).join(" | ")}` : "") +
-            "\n2. List the drugs, diseases/conditions, organisms and laboratory investigations actually discussed, with the pages where each " +
-            "appears. Use standard names (generic drug names, e.g. 'Omeprazole' not brand names). At most 60; skip passing mentions.\n" +
-            "Pages marked 'Image:' are descriptions of pictures on the slides; use them too.\n" +
-            (first ? `3. file_profile: ${PROFILE_HINT}\n` : "") +
-            "\n" +
-            text,
-          schema,
-          { system: SYSTEM, maxOutputTokens: 16_000, temperature: 0.2 },
-        );
-        if (first && r.file_profile) state.profileGuess = r.file_profile;
+        // Big files: the next groups of pages are read at the same time (up to 3), then joined in page order.
+        const groups = [batch];
+        for (let at = batch[batch.length - 1].page; groups.length < PARALLEL_BATCHES; ) {
+          const next = await nextBatch(supabase, file.id, at);
+          if (!next.length) break;
+          groups.push(next);
+          at = next[next.length - 1].page;
+        }
+        const read = (pages: typeof batch, k: number) => {
+          const withProfile = first && k === 0;
+          const schema = withProfile
+            ? { ...conceptSchema, properties: { ...conceptSchema.properties, file_profile: profileSchema }, required: [...conceptSchema.required, "file_profile"] }
+            : conceptSchema;
+          return generateJSON<{ sections: Section[]; concepts: FoundConcept[]; file_profile?: Analysis["profileGuess"] }>(
+            (withProfile && ctx ? `File name: ${ctx.name}\nWhere it is: ${ctx.where || "(top level)"}\n` : "") +
+              `These are pages ${pages[0].page}–${pages[pages.length - 1].page} of "${file.name}" (${state.totalPages} pages in all), a medical student's ` +
+              `${file.doc_type.replace("_", " ")} for ${fileCourse && !fileCourse.is_group ? fileCourse.name : "one of these courses: " + courseNames.join("; ")}.\n` +
+              "1. Split the pages into sections, one per lecture or topic. A slide deck on one topic is ONE section; a compilation of lectures " +
+              "has one section per lecture. Give each a concise topic name as a syllabus would list it (not 'Lecture 4' or a slide title), " +
+              "its first and last page, its main headings (subtopics) and the most exam-worthy facts actually stated on those pages (key_points)." +
+              (k === 0 && last ? ` The previous pages ended in the section "${last.title}"; if these pages carry on with it, use exactly that title.` : "") +
+              (k > 0 ? " These pages may carry on a lecture that started on earlier pages: if so, name it as that lecture's topic." : "") +
+              (topics?.length ? `\nExisting syllabus topics (set matches to one of these, copied exactly, when a section is about it):\n${topics.map((t) => t.name).join(" | ")}` : "") +
+              "\n2. List the drugs, diseases/conditions, organisms and laboratory investigations actually discussed, with the pages where each " +
+              "appears. Use standard names (generic drug names, e.g. 'Omeprazole' not brand names). At most 60; skip passing mentions.\n" +
+              "Pages marked 'Image:' are descriptions of pictures on the slides; use them too.\n" +
+              (withProfile ? `3. file_profile: ${PROFILE_HINT}\n` : "") +
+              "\n" +
+              pagesText(pages),
+            schema,
+            { system: SYSTEM, maxOutputTokens: 16_000, temperature: 0.2 },
+          );
+        };
+        const results = await Promise.all(groups.map(read));
+        if (first && results[0].file_profile) state.profileGuess = results[0].file_profile;
         state.sections ??= [];
-        mergeSections(state.sections, r.sections ?? []);
         state.concepts ??= [];
-        mergeConcepts(state.concepts, r.concepts ?? []);
+        for (const r of results) {
+          mergeSections(state.sections, r.sections ?? []);
+          mergeConcepts(state.concepts, r.concepts ?? []);
+        }
+        readUpTo = groups[groups.length - 1].at(-1)!.page;
+        // Pages between two lectures (e.g. where one group of pages ended and the next began) belong to the
+        // lecture before them, up to the last page read.
+        const secs = state.sections;
+        for (let i = 0; i + 1 < secs.length; i++) if (secs[i + 1].start_page > secs[i].end_page + 1) secs[i].end_page = secs[i + 1].start_page - 1;
+        if (secs.length) secs[secs.length - 1].end_page = Math.max(secs[secs.length - 1].end_page, readUpTo);
       }
     } catch (e) {
       // Keep what's done so far; the next attempt continues from here.
@@ -384,7 +416,7 @@ export async function analyzeStep(supabase: DB, file: LibraryFile, full = false)
       }
       return { status: "error", message: "Something went wrong while analysing." };
     }
-    state.cursor = batch[batch.length - 1].page;
+    state.cursor = readUpTo ?? batch[batch.length - 1].page;
     const more = (await nextBatch(supabase, file.id, state.cursor)).length > 0;
     state.failures = 0;
     if (more) {
