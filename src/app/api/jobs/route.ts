@@ -75,7 +75,7 @@ export async function GET() {
     };
   });
   // Whether the background worker can run (its settings are in Vercel). If not, files only move while Lengible is open.
-  const worker = { configured: !!(process.env.CRON_SECRET?.trim() && serviceKey()), ai: providerName[aiConfig.provider] };
+  const worker = { configured: !!(process.env.CRON_SECRET?.trim() && serviceKey()), ai: providerName[aiConfig.provider], model: aiConfig.model };
   return NextResponse.json({ jobs, summary, worker });
 }
 

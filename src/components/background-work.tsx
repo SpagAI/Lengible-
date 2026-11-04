@@ -136,6 +136,8 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
   const workerReadyRef = useRef(false);
   // Which AI processes your files (named in the panel's messages about limits).
   const [aiName, setAiName] = useState("Google");
+  // e.g. "ChatGPT (gpt-5)": shown in the panel so you can see which AI is reading your files.
+  const [aiUsed, setAiUsed] = useState("");
   // Minutes since anything in the queue last moved.
   const quietRef = useRef<number | null>(null);
   const uploading = useRef(false);
@@ -154,6 +156,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
       setWorkerReady(r.worker ? !!r.worker.configured : true);
       workerReadyRef.current = !!r.worker?.configured;
       if (r.worker?.ai) setAiName(r.worker.ai === "Gemini" ? "Google" : r.worker.ai);
+      if (r.worker?.ai) setAiUsed(`${r.worker.ai}${r.worker.model ? ` (${r.worker.model})` : ""}`);
       quietRef.current = r.summary?.lastProgress ? (Date.now() - Date.parse(r.summary.lastProgress)) / 60_000 : null;
       setSetupNeeded(!!r.setup);
       return (r.jobs ?? []) as ServerJob[];
@@ -317,6 +320,7 @@ export function BackgroundWorkProvider({ children }: { children: ReactNode }) {
         summary={summary}
         workerReady={workerReady}
         aiName={aiName}
+        aiUsed={aiUsed}
         setupNeeded={setupNeeded}
         control={control}
         onClear={async () => {
@@ -398,6 +402,7 @@ function Dock({
   setupNeeded,
   workerReady,
   aiName,
+  aiUsed,
   summary,
   control,
   onClear,
@@ -407,6 +412,7 @@ function Dock({
   setupNeeded: boolean;
   workerReady: boolean;
   aiName: string;
+  aiUsed: string;
   summary: Summary | null;
   control: (a: "pause" | "resume" | "stop" | "retry" | "remove" | "retry-waiting", ids?: string[]) => Promise<void>;
   onClear: () => void;
@@ -581,7 +587,7 @@ function Dock({
       )}
       {summary && summary.total > 0 && (
         <p className="border-b border-border px-3 py-1.5 text-[11px] text-muted">
-          Done in the last 24 h: {summary.doneToday ?? 0}
+          {aiUsed ? `AI: ${aiUsed} · ` : ""}Done in the last 24 h: {summary.doneToday ?? 0}
           {summary.minsSince != null ? ` · last progress ${ago(summary.minsSince)}` : ""}
           {summary.waitingAi ? ` · ${summary.waitingAi} waiting for ${aiName}'s AI limit to reset` : ""}
         </p>
