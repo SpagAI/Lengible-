@@ -245,7 +245,7 @@ export async function workQueue(supabase: DB, userId: string, deadline: number, 
     const now = new Date().toISOString();
     const ready = (j: Pick<ProcessJob, "not_before" | "locked_until">) => (!j.not_before || j.not_before < now) && (!j.locked_until || j.locked_until < now);
     // Files already started come first.
-    const { data: open } = await supabase
+    let { data: open } = await supabase
       .from("process_jobs")
       .select("*")
       .eq("user_id", userId)
@@ -253,6 +253,28 @@ export async function workQueue(supabase: DB, userId: string, deadline: number, 
       .gte("priority", STARTED / 2)
       .order("priority", { ascending: false })
       .order("created_at");
+    // Smallest first, also for files started earlier: big files beyond their share of the places (e.g. two
+    // huge compilations started before) step back while smaller files wait, the biggest first. Nothing is
+    // lost: each carries on later from the step and page it reached. Files being worked on right now stay.
+    const share = Math.max(1, Math.floor(MAX_OPEN / 2));
+    const bigs = ((open ?? []) as ProcessJob[]).filter((j) => j.priority < STARTED - BIG_KB).sort((a, b) => a.priority - b.priority);
+    if (bigs.length > share) {
+      const { count: smallWaiting } = await supabase
+        .from("process_jobs")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", userId)
+        .eq("state", "queued")
+        .lt("priority", STARTED / 2)
+        .gte("priority", -BIG_KB);
+      if (smallWaiting) {
+        const stepBack = bigs.slice(0, bigs.length - share).filter((j) => !j.locked_until || j.locked_until < now);
+        for (const j of stepBack) {
+          await supabase.from("process_jobs").update({ priority: j.priority - STARTED }).eq("id", j.id).eq("priority", j.priority);
+        }
+        const gone = new Set(stepBack.map((j) => j.id));
+        open = ((open ?? []) as ProcessJob[]).filter((j) => !gone.has(j.id));
+      }
+    }
     for (const j of ((open ?? []) as ProcessJob[]).filter(ready)) {
       const got = await take(j, now);
       if (got) return got;
