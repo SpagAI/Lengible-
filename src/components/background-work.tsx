@@ -679,7 +679,7 @@ function Dock({
                                 : j.running
                                   ? `${STEP_TEXT[j.step] ?? j.step}${j.total ? ` · ${j.done ?? 0} of ${j.total}` : ""}`
                                   : j.started
-                                    ? `Carrying on with “${STEP_TEXT[j.step] ?? j.step}”`
+                                    ? `Between runs: carries on with “${STEP_TEXT[j.step] ?? j.step}” within a minute`
                                     : j.step === "embed"
                                       ? "Ready to use. Search by meaning is added after the other files."
                                       : `Waiting its turn (${atOnce} files at a time, smallest first)`}

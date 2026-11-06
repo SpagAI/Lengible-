@@ -1,5 +1,8 @@
 import "server-only";
 import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, FileStatus, LibraryFile } from "@/lib/supabase/types";
 import { AI_TOO_SLOW, AIError, generateJSON, isDailyMessage, msUntilDailyReset, withAiDeadline } from "@/lib/ai";
@@ -329,7 +332,8 @@ export async function workQueue(supabase: DB, userId: string, deadline: number, 
     return null;
   };
   while (Date.now() < deadline - 20_000) {
-    while (running.size < parallel && Date.now() < deadline - 20_000) {
+    // A file is only started with at least 90 seconds left, enough to download it and get some work done.
+    while (running.size < parallel && Date.now() < deadline - 90_000) {
       const job = await claim();
       if (!job) break;
       const p = withAiDeadline(deadline, () => runJob(supabase, job, deadline))
@@ -438,7 +442,32 @@ async function loadFile(supabase: DB, id: string | null) {
 }
 
 // The file's bytes: from Lengible's storage, or straight from Google Drive for linked files.
+// The file's bytes, kept for a while on the server's own disk: a big file read over several runs (a 300-page PDF,
+// a scanned paper) is downloaded once instead of once per run. Kept per file and version; a few at most.
+const CACHE_DIR = path.join(os.tmpdir(), "lengible-files");
 async function fileBytes(supabase: DB, file: LibraryFile): Promise<Buffer> {
+  const key = path.join(CACHE_DIR, `${file.id}-${createHash("sha1").update(`${file.storage_path}|${file.size_bytes ?? ""}`).digest("hex").slice(0, 12)}`);
+  try {
+    const kept = await fs.readFile(key);
+    if (kept.length) return kept;
+  } catch {
+    // not kept yet
+  }
+  const buf = await fetchFileBytes(supabase, file);
+  try {
+    await fs.mkdir(CACHE_DIR, { recursive: true });
+    // Keep the 3 most recent files only (the server's disk is small).
+    const names = await fs.readdir(CACHE_DIR);
+    const stats = await Promise.all(names.map(async (n) => ({ n, t: (await fs.stat(path.join(CACHE_DIR, n))).mtimeMs })));
+    for (const old of stats.sort((a, b) => b.t - a.t).slice(2)) await fs.rm(path.join(CACHE_DIR, old.n), { force: true });
+    if (buf.length < 300 * 1024 * 1024) await fs.writeFile(key, buf);
+  } catch {
+    // No room or no disk: it's only a shortcut.
+  }
+  return buf;
+}
+
+async function fetchFileBytes(supabase: DB, file: LibraryFile): Promise<Buffer> {
   if (isDrivePath(file.storage_path)) {
     const { data: item } = await supabase.from("drive_items").select("drive_id, resource_key, mime, size_bytes").eq("file_id", file.id).limit(1).maybeSingle();
     const driveId = item?.drive_id ?? file.storage_path.slice(6).split("/")[0];
