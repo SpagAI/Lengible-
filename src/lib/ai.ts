@@ -1,4 +1,5 @@
 import "server-only";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { GoogleGenAI, ApiError } from "@google/genai";
 import Anthropic from "@anthropic-ai/sdk";
@@ -86,18 +87,42 @@ function closeObjects(schema: unknown): unknown {
 }
 const filesOf = (opts: GenerateOptions) => [...(opts.file ? [opts.file] : []), ...(opts.files ?? [])];
 
+// How long one AI call may take: 2 minutes (AI_CALL_TIMEOUT_MS), and never past the end of the worker run it's
+// part of, so a slow call can't get the whole run cut off by the server's time limit before anything is saved.
+const runDeadline = new AsyncLocalStorage<number>();
+export const withAiDeadline = <T>(deadline: number, fn: () => Promise<T>) => runDeadline.run(deadline, fn);
+export const AI_TOO_SLOW = "The AI took too long to answer for these pages";
+function callTimeout() {
+  const max = Number(process.env.AI_CALL_TIMEOUT_MS) || 120_000;
+  const end = runDeadline.getStore();
+  return Math.max(5_000, Math.min(max, end ? end - Date.now() - 10_000 : max));
+}
+async function timed<T>(fn: (signal: AbortSignal, ms: number) => Promise<T>): Promise<T> {
+  const ms = callTimeout();
+  const signal = AbortSignal.timeout(ms);
+  try {
+    return await fn(signal, ms);
+  } catch (e) {
+    if (signal.aborted) throw new Error(`${AI_TOO_SLOW} (over ${Math.round(ms / 1000)} seconds).`);
+    throw e;
+  }
+}
+
 async function callGemini(prompt: string, opts: GenerateOptions, model: string): Promise<string> {
   const files = filesOf(opts);
-  const response = await geminiClient().models.generateContent({
-    model,
-    contents: files.length ? [{ role: "user", parts: [...files.map((f) => ({ inlineData: f })), { text: prompt }] }] : prompt,
-    config: {
-      systemInstruction: opts.system,
-      temperature: opts.temperature ?? aiConfig.temperature,
-      maxOutputTokens: opts.maxOutputTokens,
-      ...(opts.schema ? { responseMimeType: "application/json", responseJsonSchema: opts.schema } : {}),
-    },
-  });
+  const response = await timed((signal) =>
+    geminiClient().models.generateContent({
+      model,
+      contents: files.length ? [{ role: "user", parts: [...files.map((f) => ({ inlineData: f })), { text: prompt }] }] : prompt,
+      config: {
+        systemInstruction: opts.system,
+        temperature: opts.temperature ?? aiConfig.temperature,
+        maxOutputTokens: opts.maxOutputTokens,
+        abortSignal: signal,
+        ...(opts.schema ? { responseMimeType: "application/json", responseJsonSchema: opts.schema } : {}),
+      },
+    }),
+  );
   const text = response.text;
   if (!text) throw new AIError("The AI returned an empty answer. Please try again.", "bad_output");
   return text;
@@ -115,7 +140,7 @@ async function callClaude(prompt: string, opts: GenerateOptions, model: string):
   // Current Claude models choose how much to think by themselves (effort sets how hard); sampling settings aren't used.
   // Streamed and collected into one answer: the SDK refuses long answers (e.g. 32,000 tokens for a timetable or a
   // past-question paper) on a plain request, because they may take longer than its 10-minute limit.
-  const response = await anthropicClient().beta.messages.stream({
+  const response = await timed((signal) => anthropicClient().beta.messages.stream({
     model,
     max_tokens: opts.maxOutputTokens ?? 16000,
     ...(opts.system ? { system: opts.system } : {}),
@@ -126,7 +151,7 @@ async function callClaude(prompt: string, opts: GenerateOptions, model: string):
     },
     // If Claude's safety checks decline a request, another Claude model answers instead.
     ...(/^claude-(opus-5|fable-5|sonnet-5-5)/.test(model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as never } : {}),
-  }).finalMessage();
+  }, { signal }).finalMessage());
   if (response.stop_reason === "refusal") throw new AIError("Claude declined this request. Try rephrasing it.", "bad_output");
   const text = response.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("");
   if (!text) throw new AIError("The AI returned an empty answer. Please try again.", "bad_output");
@@ -142,7 +167,7 @@ async function callOpenAI(prompt: string, opts: GenerateOptions, model: string):
     ),
     { type: "text", text: prompt },
   ];
-  const response = await openaiClient().chat.completions.create({
+  const response = await timed((signal) => openaiClient().chat.completions.create({
     model,
     messages: [...(opts.system ? [{ role: "system" as const, content: opts.system }] : []), { role: "user", content: parts }],
     ...(opts.maxOutputTokens ? { max_completion_tokens: opts.maxOutputTokens } : {}),
@@ -150,7 +175,7 @@ async function callOpenAI(prompt: string, opts: GenerateOptions, model: string):
     // thinking is enough and much faster. OPENAI_REASONING_EFFORT overrides (minimal | low | medium | high).
     ...(/^(gpt-5|o\d)/.test(model) ? { reasoning_effort: (process.env.OPENAI_REASONING_EFFORT || "low") as "low" } : {}),
     ...(opts.schema ? { response_format: { type: "json_schema" as const, json_schema: { name: "output", schema: closeObjects(opts.schema) as Record<string, unknown>, strict: false } } } : {}),
-  });
+  }, { signal }));
   const text = response.choices[0]?.message?.content;
   if (!text) throw new AIError("The AI returned an empty answer. Please try again.", "bad_output");
   return text;
@@ -213,6 +238,8 @@ async function callWithRetry(prompt: string, opts: GenerateOptions): Promise<str
     } catch (e) {
       err = e;
       if (e instanceof AIError) throw e;
+      // Too slow: another model on the same pages is no quicker; the step reads fewer pages at a time instead.
+      if (e instanceof Error && e.message.startsWith(AI_TOO_SLOW)) throw e;
       const status = statusOf(e);
       if (status === 429 && noCredit(choice.provider, e)) {
         throw new AIError(

@@ -1,6 +1,6 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { AIError, generateJSON } from "@/lib/ai";
+import { AI_TOO_SLOW, AIError, generateJSON } from "@/lib/ai";
 import type { ConceptKind, Database, LibraryFile } from "@/lib/supabase/types";
 import { todayISO } from "@/lib/dates";
 import { fileContext, PROFILE_HINT, profileSchema } from "@/lib/profile";
@@ -414,7 +414,7 @@ export async function analyzeStep(supabase: DB, file: LibraryFile, full = false)
         if (e.kind === "rate_limit" || e.kind === "busy") return { status: "rate_limited", message: e.message };
         return { status: "error", message: e.message };
       }
-      return { status: "error", message: "Something went wrong while analysing." };
+      return { status: "error", message: e instanceof Error && e.message.startsWith(AI_TOO_SLOW) ? e.message : "Something went wrong while analysing." };
     }
     state.cursor = readUpTo ?? batch[batch.length - 1].page;
     const more = (await nextBatch(supabase, file.id, state.cursor)).length > 0;

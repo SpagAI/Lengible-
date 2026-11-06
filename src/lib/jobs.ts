@@ -2,7 +2,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, FileStatus, LibraryFile } from "@/lib/supabase/types";
-import { AIError, generateJSON, isDailyMessage, msUntilDailyReset } from "@/lib/ai";
+import { AI_TOO_SLOW, AIError, generateJSON, isDailyMessage, msUntilDailyReset, withAiDeadline } from "@/lib/ai";
 import { analyzeStep, type Analysis, ANALYSIS_VERSION, saveConcepts, saveSections } from "@/lib/analysis/run";
 import { download, isDrivePath, isOfficeTemp, unsupportedReason } from "@/lib/drive";
 import { parsePartsPath, partPaths } from "@/lib/library";
@@ -36,7 +36,7 @@ export type ProcessJob = {
   state: JobState;
   step: JobStep;
   // textPage: for long PDFs, the next page to read (the text step saves its place every few pages).
-  progress: { done?: number; total?: number; pictures?: number[]; message?: string; textPage?: number };
+  progress: { done?: number; total?: number; pictures?: number[]; message?: string; textPage?: number; per?: number };
   attempts: number;
   error: string | null;
   note: string | null;
@@ -239,7 +239,23 @@ export async function workQueue(supabase: DB, userId: string, deadline: number, 
       .eq("state", "queued")
       .or(`locked_until.is.null,locked_until.lt.${now}`)
       .select("*");
-    return (got?.[0] as ProcessJob | undefined) ?? null;
+    const job = (got?.[0] as ProcessJob | undefined) ?? null;
+    // A lock left behind means the last run on this file was cut off by the server's time limit before it could
+    // save (a run always lets go of its lock when it ends). Count it as a try and read fewer pages per AI call,
+    // so the file doesn't loop forever without moving.
+    if (job && j.locked_until) {
+      const attempts = job.attempts + 1;
+      const reason = "Processing this file kept getting cut off (its pages took the AI too long, even a few at a time)";
+      if (attempts >= MAX_ATTEMPTS) {
+        await supabase.from("process_jobs").update({ state: "failed", error: `${reason} (tried ${attempts} times)`, attempts, locked_until: null, finished_at: iso(Date.now()), updated_at: iso(Date.now()) }).eq("id", job.id);
+        await markFileFailed(supabase, job, reason);
+        return null;
+      }
+      const progress = { ...job.progress, per: Math.max(1, Math.floor((job.progress.per ?? 6) / 2)) };
+      await supabase.from("process_jobs").update({ attempts, progress, note: "The last run was cut off; carrying on with fewer pages at a time.", updated_at: iso(Date.now()) }).eq("id", job.id);
+      return { ...job, attempts, progress };
+    }
+    return job;
   };
   const claim = async () => {
     const now = new Date().toISOString();
@@ -316,7 +332,7 @@ export async function workQueue(supabase: DB, userId: string, deadline: number, 
     while (running.size < parallel && Date.now() < deadline - 20_000) {
       const job = await claim();
       if (!job) break;
-      const p = runJob(supabase, job, deadline)
+      const p = withAiDeadline(deadline, () => runJob(supabase, job, deadline))
         .then(() => void done.push(job.id))
         .finally(() => running.delete(p));
       running.add(p);
@@ -591,12 +607,16 @@ async function advance(supabase: DB, job: ProcessJob, deadline: number): Promise
       };
       while (done < list.length && Date.now() < deadline - 40_000) {
         const groups: number[][] = [];
-        for (let k = done; k < list.length && groups.length < (isImage ? 1 : 3); k += 6) groups.push(isImage ? [1] : list.slice(k, k + 6));
+        // Pages per call: 6, fewer after a call took too long (heavy scans), down to 1.
+        const per = job.progress.per ?? 6;
+        for (let k = done; k < list.length && groups.length < (isImage ? 1 : 3); k += per) groups.push(isImage ? [1] : list.slice(k, k + per));
         try {
           await Promise.all(groups.map(readPages));
         } catch (e) {
           const w = aiWait(e);
           if (w) return { ...w, progress: { ...job.progress, done } };
+          if (e instanceof Error && e.message.startsWith(AI_TOO_SLOW) && per > 1)
+            return { wait: { ms: 5_000, note: "These pages are heavy: reading fewer at a time." }, progress: { ...job.progress, done, per: Math.max(1, Math.floor(per / 2)) } };
           throw e;
         }
         done += groups.reduce((n, g) => n + g.length, 0);
