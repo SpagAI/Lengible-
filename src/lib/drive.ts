@@ -313,15 +313,31 @@ export async function download(item: Pick<DriveItem, "drive_id" | "resource_key"
 }
 
 // Every Drive item of a link. Supabase hands back at most 1,000 rows per request, so read it page by page.
-export async function allDriveItems(supabase: DB, sourceId: string) {
+// Every file of a link, 1,000 per request (the database's limit per request), up to 4 requests at the same time.
+// `columns` fetches only what's needed (the Drive page doesn't need fingerprints or locks).
+export async function allDriveItems(supabase: DB, sourceId: string, columns = "*") {
+  const { count, error: countError } = await supabase.from("drive_items").select("id", { count: "exact", head: true }).eq("source_id", sourceId);
+  if (countError) throw countError;
+  const pages = Math.max(1, Math.ceil((count ?? 0) / 1000) + 1); // one spare page in case files were added meanwhile
   const rows: DriveItem[] = [];
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await supabase.from("drive_items").select("*").eq("source_id", sourceId).order("path").order("name").order("id").range(from, from + 999);
-    if (error) throw error;
-    rows.push(...((data ?? []) as DriveItem[]));
-    if (!data || data.length < 1000) return rows;
+  for (let start = 0; start < pages; start += 4) {
+    const chunk = await Promise.all(
+      Array.from({ length: Math.min(4, pages - start) }, (_, k) => {
+        const from = (start + k) * 1000;
+        return supabase.from("drive_items").select(columns).eq("source_id", sourceId).order("path").order("name").order("id").range(from, from + 999);
+      }),
+    );
+    for (const { data, error } of chunk) {
+      if (error) throw error;
+      rows.push(...((data ?? []) as unknown as DriveItem[]));
+    }
+    if (chunk.some(({ data }) => !data || data.length < 1000)) break;
   }
+  return rows;
 }
+
+// What the Drive page shows for each file.
+export const DRIVE_PAGE_COLUMNS = "id, name, mime, path, size_bytes, modified_time, course_id, doc_type, include, status, error, file_id, created_at";
 
 // Saves what the link contains: new files are added, changed ones marked, gone ones marked removed.
 // Course and type are guessed from folder and file names; your own choices are kept.

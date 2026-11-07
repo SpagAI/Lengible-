@@ -8,7 +8,7 @@ import { reconnectDriveLink, removeDriveLink } from "../actions";
 import { Button, PageHeader } from "@/components/ui";
 import { ConfirmButton } from "@/components/confirm-button";
 import { DriveTree } from "@/components/drive/drive-tree";
-import { allDriveItems, blockedNote } from "@/lib/drive";
+import { allDriveItems, blockedNote, DRIVE_PAGE_COLUMNS } from "@/lib/drive";
 import type { DriveSource } from "@/lib/supabase/types";
 
 export const metadata: Metadata = { title: "Drive link" };
@@ -24,16 +24,17 @@ export default async function DriveSourcePage({ params, searchParams }: PageProp
   if (!data) notFound();
   const source = data as DriveSource;
   const [items, courses] = await Promise.all([
-    allDriveItems(supabase, id),
+    allDriveItems(supabase, id, DRIVE_PAGE_COLUMNS),
     getCourses(supabase),
   ]);
   // Whether each file brought in has been processed yet ("uploaded" = stored, waiting for you to tap Process).
   const fileIds = items.flatMap((i) => (i.file_id ? [i.file_id] : []));
   const fileStatus: Record<string, string> = {};
-  for (let k = 0; k < fileIds.length; k += 200) {
-    const { data } = await supabase.from("files").select("id, status").in("id", fileIds.slice(k, k + 200));
-    for (const f of data ?? []) fileStatus[f.id] = f.status;
-  }
+  // 200 at a time (a request's address can't hold more ids), all at once.
+  const chunks = [];
+  for (let k = 0; k < fileIds.length; k += 200) chunks.push(fileIds.slice(k, k + 200));
+  const found = await Promise.all(chunks.map((ids) => supabase.from("files").select("id, status").in("id", ids)));
+  for (const { data } of found) for (const f of data ?? []) fileStatus[f.id] = f.status;
   return (
     <>
       <Link href="/library/drive" className="mb-1 inline-flex items-center gap-1 text-sm text-brand">

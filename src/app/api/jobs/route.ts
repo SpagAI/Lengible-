@@ -6,14 +6,20 @@ import { serviceKey } from "@/lib/supabase/admin";
 import { aiConfig, providerName } from "@/config/ai";
 
 // The processing queue: GET lists your jobs (running and recent), POST adds files or pauses/resumes/stops/retries.
+
+const SUMMARY_COLUMNS: string = "state, step, done:progress->done, total:progress->total, not_before, finished_at, note, updated_at";
+// What the panel shows for each file: not the full progress record (a scanned file's keeps up to 600 page numbers).
+const LIST_COLUMNS: string = "id, name, file_id, drive_item_id, state, step, priority, locked_until, not_before, note, error, finished_at, done:progress->done, total:progress->total";
+
 export async function GET() {
   const supabase = await createClient();
-  const { data: auth } = await supabase.auth.getUser();
-  if (!auth.user) return NextResponse.json({ jobs: [] });
+  // Checked here from the sign-in token (no trip to the sign-in server): this runs every few seconds.
+  const { data: auth } = await supabase.auth.getClaims();
+  if (!auth?.claims?.sub) return NextResponse.json({ jobs: [] });
   const dayAgo = new Date(Date.now() - 24 * 3600_000).toISOString();
   const [{ data: open, error }, { data: recent }] = await Promise.all([
-    supabase.from("process_jobs").select("*").in("state", ["queued", "paused", "stopped", "failed"]).order("priority", { ascending: false }).order("created_at").limit(300),
-    supabase.from("process_jobs").select("*").eq("state", "done").gt("finished_at", dayAgo).order("finished_at", { ascending: false }).limit(50),
+    supabase.from("process_jobs").select(LIST_COLUMNS).in("state", ["queued", "paused", "stopped", "failed"]).order("priority", { ascending: false }).order("created_at").limit(300),
+    supabase.from("process_jobs").select(LIST_COLUMNS).eq("state", "done").gt("finished_at", dayAgo).order("finished_at", { ascending: false }).limit(50),
   ]);
   if (error) return NextResponse.json({ jobs: [], setup: isMissingTable(error) });
   // Totals over every job (the list above is capped at 300 for speed), so the panel's numbers are exact.
@@ -22,11 +28,12 @@ export async function GET() {
   for (let from = 0; from < 50000; from += 1000) {
     const { data } = await supabase
       .from("process_jobs")
-      .select("state, step, progress, not_before, finished_at, note, updated_at")
+      .select(SUMMARY_COLUMNS)
       .or(`state.neq.done,finished_at.gt.${dayAgo}`)
       .order("id")
       .range(from, from + 999);
-    for (const j of data ?? []) {
+    type Row = { state: string; step: string; done: number | null; total: number | null; not_before: string | null; finished_at: string | null; note: string | null; updated_at: string | null };
+    for (const j of (data ?? []) as unknown as Row[]) {
       summary.total++;
       if (j.state === "queued") summary.active++;
       // (A copy waiting for its twin's results isn't a problem: not counted as waiting.)
@@ -46,13 +53,14 @@ export async function GET() {
       if (j.state === "paused" || j.state === "stopped") summary.paused++;
       if (j.state === "failed") summary.failed++;
       if (j.state === "done") summary.done++;
-      sum += jobPercent(j as unknown as ProcessJob);
+      sum += jobPercent({ state: j.state, step: j.step, progress: { done: Number(j.done) || 0, total: Number(j.total) || 0 } } as unknown as ProcessJob);
     }
     if (!data || data.length < 1000) break;
   }
   summary.percent = summary.total ? Math.round(sum / summary.total) : 0;
   const jobs = [...(open ?? []), ...(recent ?? [])].map((j) => {
-    const job = j as unknown as ProcessJob;
+    const row = j as unknown as ProcessJob & { done: number | null; total: number | null };
+    const job = { ...row, progress: { done: Number(row.done) || 0, total: Number(row.total) || 0 } } as ProcessJob;
     const now = Date.now();
     return {
       id: job.id,
