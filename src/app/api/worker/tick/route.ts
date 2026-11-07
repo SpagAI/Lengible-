@@ -25,7 +25,10 @@ export async function POST(req: NextRequest) {
     admin.from("drive_sources").select("user_id").is("removed_at", null).eq("auto_import", true).or(`last_checked_at.is.null,last_checked_at.lt.${dueBefore}`).limit(100),
   ]);
   // Pages still to be indexed for search by meaning (done in the background, also once the queue is empty).
-  const { data: unindexed } = await admin.from("chunks").select("user_id").is("embedding", null).limit(50);
+  // Only every 15 minutes, and for a minute at most: background indexing must not keep the server busy all day
+  // (hosting plans count the time it runs).
+  const indexTime = new Date().getUTCMinutes() % 15 === 0;
+  const { data: unindexed } = indexTime ? await admin.from("chunks").select("user_id").is("embedding", null).limit(50) : { data: [] };
   const users = [...new Set([...(waiting ?? []), ...(links ?? []), ...(unindexed ?? [])].map((r) => r.user_id))].slice(0, 5);
   const report: Record<string, unknown> = {};
   // The processing code (PDF, Office and AI libraries) is loaded only now, after the quick checks above: loading
@@ -46,7 +49,7 @@ export async function POST(req: NextRequest) {
           }
           const worked = await workQueue(supabase, userId, deadline);
           // Time left over: index pages for search by meaning in the background.
-          const indexed = await (await import("@/lib/embed")).indexMissing(supabase, deadline).catch(() => 0);
+          const indexed = indexTime ? await (await import("@/lib/embed")).indexMissing(supabase, Math.min(deadline, Date.now() + 80_000)).catch(() => 0) : 0;
           return { queued, ...worked, indexed };
         });
       } catch (e) {
